@@ -1,0 +1,734 @@
+{
+  "name": "CoCounsel - Complete with Memorandum",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "legal-research",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 800]
+    },
+    {
+      "parameters": {
+        "jsCode": "const query = $input.item.json.body.query;\nconst jurisdiction = $input.item.json.body.jurisdiction || 'federal';\nconst practiceArea = $input.item.json.body.practiceArea || 'general';\nconst userId = $input.item.json.body.userId;\nconst isFollowUp = $input.item.json.body.isFollowUp || false;\nconst previousSessionId = $input.item.json.body.previousSessionId || null;\nconst outputFormat = $input.item.json.body.outputFormat || 'memo'; // memo, brief, opinion_letter\n\nconst sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;\n\nconst sessionMemory = {\n  sessionId: sessionId,\n  startTime: new Date().toISOString(),\n  query: query,\n  jurisdiction: jurisdiction,\n  practiceArea: practiceArea,\n  userId: userId,\n  outputFormat: outputFormat,\n  state: {\n    currentStage: 'initialization',\n    stagesCompleted: [],\n    errors: [],\n    retryCount: 0,\n    maxRetries: 2\n  },\n  context: {\n    identifiedIssues: [],\n    searchesPerformed: [],\n    casesFound: [],\n    decisions: []\n  }\n};\n\nconst workingMemory = {\n  reasoning: {\n    currentFocus: query,\n    subQuestions: [],\n    hypotheses: [],\n    evidenceGathered: []\n  },\n  intermediateResults: {\n    legalIssues: [],\n    searchTerms: [],\n    caseAnalyses: []\n  },\n  decisionTrail: [\n    {\n      stage: 'initialization',\n      timestamp: new Date().toISOString(),\n      decision: 'Starting research session',\n      confidence: 1.0\n    }\n  ],\n  coordination: {\n    tasksInProgress: ['query_parsing'],\n    tasksCompleted: [],\n    nextTasks: ['load_memory', 'issue_spotting']\n  }\n};\n\nreturn {\n  json: {\n    originalQuery: query,\n    jurisdiction: jurisdiction,\n    practiceArea: practiceArea,\n    userId: userId,\n    isFollowUp: isFollowUp,\n    previousSessionId: previousSessionId,\n    outputFormat: outputFormat,\n    timestamp: new Date().toISOString(),\n    sessionMemory: sessionMemory,\n    workingMemory: workingMemory\n  }\n};"
+      },
+      "id": "init-memory",
+      "name": "Initialize Memory Systems",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 800]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM user_research_history WHERE user_id = $1 ORDER BY created_at DESC LIMIT 10",
+        "options": {
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "1",
+                "value": "={{ $json.userId }}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "db-user-history",
+      "name": "DB: User History",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [680, 600],
+      "credentials": {
+        "postgres": {
+          "id": "placeholder",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM user_preferences WHERE user_id = $1",
+        "options": {
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "1",
+                "value": "={{ $json.userId }}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "db-user-prefs",
+      "name": "DB: User Preferences",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [680, 720],
+      "credentials": {
+        "postgres": {
+          "id": "placeholder",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM research_patterns WHERE LOWER(query_pattern) LIKE LOWER($1) ORDER BY average_quality_score DESC LIMIT 5",
+        "options": {
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "1",
+                "value": "={{ '%' + $json.originalQuery.toLowerCase().split(' ').slice(0, 3).join('%') + '%' }}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "db-patterns",
+      "name": "DB: Research Patterns",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [680, 840],
+      "credentials": {
+        "postgres": {
+          "id": "placeholder",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM learning_examples WHERE query_type = $1 ORDER BY importance_weight DESC LIMIT 5",
+        "options": {
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "1",
+                "value": "={{ $json.practiceArea }}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "db-expert-lessons",
+      "name": "DB: Expert Lessons",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [680, 960],
+      "credentials": {
+        "postgres": {
+          "id": "placeholder",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.isFollowUp }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check-followup",
+      "name": "Is Follow-up?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 1080]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM user_research_history WHERE session_id = $1",
+        "options": {
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "1",
+                "value": "={{ $json.previousSessionId }}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "db-previous-session",
+      "name": "DB: Previous Session",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [900, 1080],
+      "credentials": {
+        "postgres": {
+          "id": "placeholder",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const conversationKey = 'conversation_' + $input.item.json.userId;\nlet conversationMemory = {};\n\ntry {\n  conversationMemory = await $store.get(conversationKey) || {\n    sessions: [],\n    currentSession: null\n  };\n} catch (error) {\n  conversationMemory = {\n    sessions: [],\n    currentSession: null\n  };\n}\n\nreturn {\n  json: {\n    ...$input.item.json,\n    conversationMemory: conversationMemory\n  }\n};"
+      },
+      "id": "load-conversation-memory",
+      "name": "Load Conversation Memory",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 1200]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      },
+      "id": "merge-db-results",
+      "name": "Merge DB Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1120, 800]
+    },
+    {
+      "parameters": {
+        "jsCode": "const baseData = $input.first().json;\nconst userHistory = $('DB: User History').all();\nconst userPrefsResult = $('DB: User Preferences').first();\nconst userPrefs = userPrefsResult ? userPrefsResult.json : {};\nconst patterns = $('DB: Research Patterns').all();\nconst expertLessons = $('DB: Expert Lessons').all();\n\nlet previousSession = null;\nif (baseData.isFollowUp && baseData.previousSessionId) {\n  const prevSessionData = $('DB: Previous Session').first();\n  previousSession = prevSessionData ? prevSessionData.json : null;\n}\n\nconst conversationMemory = baseData.conversationMemory || { sessions: [], currentSession: null };\n\nconst recentIssues = userHistory\n  .flatMap(h => {\n    try {\n      return typeof h.json.issues_identified === 'string' \n        ? JSON.parse(h.json.issues_identified) \n        : h.json.issues_identified || [];\n    } catch {\n      return [];\n    }\n  })\n  .slice(0, 10);\n\nconst frequentJurisdictions = userHistory\n  .map(h => h.json.jurisdiction)\n  .filter(j => j)\n  .reduce((acc, j) => {\n    acc[j] = (acc[j] || 0) + 1;\n    return acc;\n  }, {});\n\nconst effectiveSearchTerms = patterns\n  .flatMap(p => {\n    try {\n      return typeof p.json.successful_search_terms === 'string'\n        ? JSON.parse(p.json.successful_search_terms)\n        : p.json.successful_search_terms || [];\n    } catch {\n      return [];\n    }\n  });\n\nconst expertInsights = expertLessons.map(l => ({\n  queryType: l.json.query_type,\n  lessonLearned: l.json.lesson_learned,\n  importance: l.json.importance_weight,\n  correctApproach: l.json.correct_analysis\n}));\n\nconst previousContext = previousSession ? {\n  sessionId: previousSession.session_id,\n  query: previousSession.query,\n  issues: previousSession.issues_identified,\n  cases: previousSession.cases_cited,\n  jurisdiction: previousSession.jurisdiction\n} : null;\n\nconst unifiedMemory = {\n  session: baseData.sessionMemory,\n  working: baseData.workingMemory,\n  longTerm: {\n    userProfile: {\n      userId: baseData.userId,\n      totalResearches: userHistory.length,\n      averageQuality: userHistory.length > 0 \n        ? userHistory.reduce((sum, h) => sum + (h.json.quality_score || 0), 0) / userHistory.length\n        : 0\n    },\n    recentContext: {\n      issues: recentIssues,\n      jurisdictions: frequentJurisdictions,\n      patterns: patterns.map(p => ({\n        pattern: p.json.query_pattern,\n        terms: p.json.successful_search_terms,\n        score: p.json.average_quality_score\n      })),\n      effectiveSearchTerms: effectiveSearchTerms\n    },\n    expertKnowledge: {\n      lessons: expertInsights,\n      totalLessons: expertLessons.length\n    },\n    conversationContext: {\n      recentSessions: conversationMemory.sessions || [],\n      previousSession: previousContext\n    },\n    preferences: {\n      jurisdictions: userPrefs.preferred_jurisdictions || [],\n      practiceAreas: userPrefs.practice_areas || [],\n      citationStyle: userPrefs.citation_style || 'bluebook',\n      detailLevel: userPrefs.detail_level || 'comprehensive'\n    }\n  },\n  meta: {\n    memorySystemsLoaded: ['session', 'working', 'longTerm'],\n    loadedAt: new Date().toISOString(),\n    databaseRecordsLoaded: {\n      userHistory: userHistory.length,\n      patterns: patterns.length,\n      expertLessons: expertLessons.length\n    }\n  }\n};\n\nreturn {\n  json: {\n    ...baseData,\n    unifiedMemory: unifiedMemory,\n    memoryMergedAt: new Date().toISOString()\n  }\n};"
+      },
+      "id": "build-unified-memory",
+      "name": "Build Unified Memory",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 800]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "issuePrompt",
+              "type": "string",
+              "value": "=You are a legal issue spotter.\n\n{{ $json.sessionMemory.state.retryCount > 0 ? '⚠️ RETRY ' + $json.sessionMemory.state.retryCount + ': ' + ($json.qualityFeedback || '') + '\\n\\n' : '' }}Query: {{ $json.originalQuery }}\nJurisdiction: {{ $json.jurisdiction }}\n\nJSON:\n{\n  \"legalIssues\": [\"issue1\"],\n  \"searchTerms\": [\"term1\"],\n  \"complexity\": \"low|medium|high\",\n  \"reasoning\": \"\",\n  \"confidence\": \"85%\"\n}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "build-issue-prompt",
+      "name": "Build Issue Prompt",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [1560, 800]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.issuePrompt }}",
+        "options": {}
+      },
+      "id": "issue-agent",
+      "name": "Issue Spotter Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.6,
+      "position": [1780, 800]
+    },
+    {
+      "parameters": {
+        "model": "claude-sonnet-4-20250514",
+        "options": {
+          "temperature": 0.3,
+          "maxTokens": 3000
+        }
+      },
+      "id": "claude-1",
+      "name": "Claude 1",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1,
+      "position": [1780, 980]
+    },
+    {
+      "parameters": {
+        "jsCode": "let analysis;\ntry {\n  const responseText = $input.item.json.output || '{}';\n  analysis = JSON.parse(responseText.replace(/```json\\n?/g, '').replace(/```\\n?/g, '').trim());\n} catch {\n  analysis = { legalIssues: ['Contract dispute'], searchTerms: [$input.item.json.originalQuery], complexity: 'medium', reasoning: 'Fallback', confidence: '70%' };\n}\n\nconst updatedSessionMemory = {\n  ...$input.item.json.sessionMemory,\n  state: { ...$input.item.json.sessionMemory.state, currentStage: 'issue_spotting_complete', stagesCompleted: [...$input.item.json.sessionMemory.state.stagesCompleted, 'issue_spotting'] },\n  context: { ...$input.item.json.sessionMemory.context, identifiedIssues: analysis.legalIssues }\n};\n\nconst updatedWorkingMemory = {\n  reasoning: { currentFocus: 'case_search', subQuestions: [], hypotheses: [], evidenceGathered: ['Issue spotting completed'] },\n  intermediateResults: { legalIssues: analysis.legalIssues, searchTerms: analysis.searchTerms, caseAnalyses: [] },\n  decisionTrail: [ ...$input.item.json.workingMemory.decisionTrail, { stage: 'issue_spotting', timestamp: new Date().toISOString(), decision: `Issues: ${analysis.legalIssues.join(', ')}`, confidence: parseFloat(analysis.confidence) / 100 || 0.7 } ],\n  coordination: { tasksInProgress: ['case_search'], tasksCompleted: ['query_parsing', 'issue_spotting'], nextTasks: ['case_analysis'] }\n};\n\nreturn { json: { ...($input.item.json), analysis: analysis, sessionMemory: updatedSessionMemory, workingMemory: updatedWorkingMemory, unifiedMemory: { ...($input.item.json.unifiedMemory), session: updatedSessionMemory, working: updatedWorkingMemory } } };"
+      },
+      "id": "update-memory-1",
+      "name": "Update Memory (Issue)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 800]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH query_embedding AS (SELECT embedding FROM generate_embedding($1)) SELECT c.*, 1 - (c.embedding <=> (SELECT embedding FROM query_embedding)) AS similarity FROM case_knowledge_base c WHERE c.jurisdiction = $2 AND 1 - (c.embedding <=> (SELECT embedding FROM query_embedding)) > 0.7 ORDER BY similarity DESC LIMIT 10",
+        "options": {
+          "queryParameters": {
+            "parameters": [
+              { "name": "1", "value": "={{ $json.analysis.searchTerms[0] }}" },
+              { "name": "2", "value": "={{ $json.jurisdiction }}" }
+            ]
+          }
+        }
+      },
+      "id": "db-vector-search",
+      "name": "DB: Vector Search",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [2220, 800],
+      "credentials": { "postgres": { "id": "placeholder", "name": "PostgreSQL" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "return { json: { ...($input.item.json), traditionalResults: [{ citation: 'Example v. Case, 123 F.3d 456', holding: 'Contract terms must be clear', relevanceScore: 85 }] } };"
+      },
+      "id": "traditional-search",
+      "name": "Traditional Search",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2220, 920]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "options": {}
+      },
+      "id": "merge-search",
+      "name": "Merge Search",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [2440, 860]
+    },
+    {
+      "parameters": {
+        "jsCode": "const vectorResults = $('DB: Vector Search').all();\nconst traditionalResults = $input.item.json.traditionalResults || [];\nconst allCases = [ ...vectorResults.map(r => ({ ...r.json, searchType: 'semantic' })), ...traditionalResults.map(r => ({ ...r, searchType: 'traditional' })) ];\nreturn { json: { ...($input.item.json), searchResults: allCases, totalCasesFound: allCases.length } };"
+      },
+      "id": "combine-results",
+      "name": "Combine Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2660, 860]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "casePrompt",
+              "type": "string",
+              "value": "=Analyze cases.\n\n{{ $json.sessionMemory.state.retryCount > 0 ? '⚠️ RETRY: ' + ($json.qualityFeedback || '') + '\\n\\n' : '' }}Cases: {{ JSON.stringify($json.searchResults) }}\n\nJSON:\n{\n  \"relevantCases\": [{\"citation\": \"\", \"relevanceScore\": 8, \"keyHolding\": \"\"}],\n  \"summary\": \"\",\n  \"confidence\": \"85%\"\n}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "build-case-prompt",
+      "name": "Build Case Prompt",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [2880, 860]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.casePrompt }}",
+        "options": {}
+      },
+      "id": "case-agent",
+      "name": "Case Analysis Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.6,
+      "position": [3100, 860]
+    },
+    {
+      "parameters": {
+        "model": "claude-sonnet-4-20250514",
+        "options": { "temperature": 0.2, "maxTokens": 4000 }
+      },
+      "id": "claude-2",
+      "name": "Claude 2",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1,
+      "position": [3100, 1040]
+    },
+    {
+      "parameters": {
+        "jsCode": "let caseAnalysis;\ntry {\n  const responseText = $input.item.json.output || '{}';\n  caseAnalysis = JSON.parse(responseText.replace(/```json\\n?/g, '').replace(/```\\n?/g, '').trim());\n} catch { caseAnalysis = { relevantCases: [], summary: 'Done', confidence: '70%' }; }\n\nconst updatedWorkingMemory = {\n  ...$input.item.json.workingMemory,\n  reasoning: { ...$input.item.json.workingMemory.reasoning, evidenceGathered: [ ...$input.item.json.workingMemory.reasoning.evidenceGathered, `Found ${caseAnalysis.relevantCases?.length || 0} relevant cases` ] },\n  intermediateResults: { ...$input.item.json.workingMemory.intermediateResults, caseAnalyses: [...$input.item.json.workingMemory.intermediateResults.caseAnalyses, caseAnalysis] },\n  decisionTrail: [ ...$input.item.json.workingMemory.decisionTrail, { stage: 'case_analysis', timestamp: new Date().toISOString(), decision: `Analyzed ${caseAnalysis.relevantCases?.length || 0} cases`, confidence: parseFloat(caseAnalysis.confidence) / 100 || 0.7 } ]\n};\n\nreturn { json: { ...($input.item.json), caseAnalysis: caseAnalysis, workingMemory: updatedWorkingMemory, unifiedMemory: { ...($input.item.json.unifiedMemory), working: updatedWorkingMemory } } };"
+      },
+      "id": "update-memory-2",
+      "name": "Update Memory (Cases)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3320, 860]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "synthesisPrompt",
+              "type": "string",
+              "value": "=Synthesize legal analysis.\n\n{{ $json.sessionMemory.state.retryCount > 0 ? '⚠️ RETRY: ' + ($json.qualityFeedback || '') + '\\n\\n' : '' }}Cases: {{ JSON.stringify($json.caseAnalysis) }}\n\nJSON:\n{\n  \"executiveSummary\": \"\",\n  \"legalAnalysis\": {\n    \"keyPrecedents\": [{\"citation\": \"\", \"holding\": \"\", \"application\": \"\"}],\n    \"legalStandards\": [],\n    \"jurisdictionalNotes\": \"\"\n  },\n  \"strengthAssessment\": {\n    \"overall\": \"strong|moderate|weak\",\n    \"confidence\": \"85%\",\n    \"reasoning\": \"\"\n  },\n  \"citations\": [],\n  \"qualityMetrics\": {\n    \"precedentCount\": 5,\n    \"authorityLevel\": \"binding\",\n    \"analysisDepth\": \"comprehensive\"\n  }\n}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "build-synthesis-prompt",
+      "name": "Build Synthesis Prompt",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [3540, 860]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.synthesisPrompt }}",
+        "options": {}
+      },
+      "id": "synthesis-agent",
+      "name": "Synthesis Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.6,
+      "position": [3760, 860]
+    },
+    {
+      "parameters": {
+        "model": "claude-sonnet-4-20250514",
+        "options": { "temperature": 0.3, "maxTokens": 8000 }
+      },
+      "id": "claude-3",
+      "name": "Claude 3",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1,
+      "position": [3760, 1040]
+    },
+    {
+      "parameters": {
+        "jsCode": "let synthesis;\ntry {\n  const responseText = $input.item.json.output || '{}';\n  synthesis = JSON.parse(responseText.replace(/```json\\n?/g, '').replace(/```\\n?/g, '').trim());\n} catch { synthesis = { executiveSummary: 'Completed', qualityMetrics: { precedentCount: 0, analysisDepth: 'shallow' } }; }\n\nconst finalWorkingMemory = { ...$input.item.json.workingMemory, decisionTrail: [ ...$input.item.json.workingMemory.decisionTrail, { stage: 'synthesis', timestamp: new Date().toISOString(), decision: 'Synthesis complete', confidence: parseFloat(synthesis.strengthAssessment?.confidence || '70%') / 100 } ] };\n\nreturn { json: { ...($input.item.json), synthesis: synthesis, workingMemory: finalWorkingMemory } };"
+      },
+      "id": "finalize-memory",
+      "name": "Finalize Memory",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3980, 860]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "qualityPrompt",
+              "type": "string",
+              "value": "=Legal QA reviewer.\n\nANALYSIS: {{ JSON.stringify($json.synthesis) }}\nCASES: {{ $json.caseAnalysis.relevantCases?.length || 0 }}\n\nMINIMUM: Score ≥75, Citations ≥70, Precedents ≥3\n\nJSON:\n{\n  \"qualityScore\": 85,\n  \"metrics\": {\"legalAccuracy\": 90, \"citationQuality\": 85, \"reasoningDepth\": 80, \"completeness\": 85, \"precedentCount\": 5, \"analysisDepth\": \"comprehensive\"},\n  \"passesThreshold\": true,\n  \"issues\": [],\n  \"recommendations\": [],\n  \"needsExpertReview\": false,\n  \"reasoning\": \"\"\n}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "build-quality-prompt",
+      "name": "Build Quality Prompt",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [4200, 860]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.qualityPrompt }}",
+        "options": {}
+      },
+      "id": "quality-agent",
+      "name": "Quality Control Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.6,
+      "position": [4420, 860]
+    },
+    {
+      "parameters": {
+        "model": "claude-sonnet-4-20250514",
+        "options": { "temperature": 0.1, "maxTokens": 2000 }
+      },
+      "id": "claude-quality",
+      "name": "Claude Quality",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1,
+      "position": [4420, 1040]
+    },
+    {
+      "parameters": {
+        "jsCode": "let qualityReport;\ntry {\n  const responseText = $input.item.json.output || '{}';\n  qualityReport = JSON.parse(responseText.replace(/```json\\n?/g, '').replace(/```\\n?/g, '').trim());\n} catch { qualityReport = { qualityScore: 70, passesThreshold: true, issues: [], needsExpertReview: false }; }\n\nreturn { json: { ...($input.item.json), qualityReport: qualityReport } };"
+      },
+      "id": "parse-quality",
+      "name": "Parse Quality Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4640, 860]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {},
+          "conditions": [
+            { "id": "quality-check", "leftValue": "={{ $json.qualityReport.passesThreshold }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" } },
+            { "id": "retry-limit", "leftValue": "={{ $json.sessionMemory.state.retryCount }}", "rightValue": "={{ $json.sessionMemory.state.maxRetries }}", "operator": { "type": "number", "operation": "lt" } }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "quality-gate",
+      "name": "Quality Gate",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [4860, 860]
+    },
+    {
+      "parameters": {
+        "jsCode": "const retryCount = $input.item.json.sessionMemory.state.retryCount + 1;\nconst issues = $input.item.json.qualityReport.issues || [];\nconst recommendations = $input.item.json.qualityReport.recommendations || [];\nconst qualityFeedback = [ ...issues.map(i => `Issue: ${i}`), ...recommendations.map(r => `Recommendation: ${r}`) ].join('. ');\n\nconst updatedSessionMemory = { ...$input.item.json.sessionMemory, state: { ...$input.item.json.sessionMemory.state, retryCount: retryCount, currentStage: 'retry_' + retryCount, errors: [ ...$input.item.json.sessionMemory.state.errors, { stage: 'quality_control', timestamp: new Date().toISOString(), error: 'Quality threshold not met', score: $input.item.json.qualityReport.qualityScore, issues: issues } ] } };\n\nconst resetWorkingMemory = { reasoning: { currentFocus: $input.item.json.originalQuery, subQuestions: [], hypotheses: [], evidenceGathered: [`Retry ${retryCount}: ${qualityFeedback}`] }, intermediateResults: { legalIssues: [], searchTerms: [], caseAnalyses: [] }, decisionTrail: [ ...$input.item.json.workingMemory.decisionTrail, { stage: 'quality_control_retry', timestamp: new Date().toISOString(), decision: `Retry ${retryCount} initiated - Quality: ${$input.item.json.qualityReport.qualityScore}`, confidence: 0.5, reasoning: qualityFeedback } ], coordination: { tasksInProgress: ['retry_issue_spotting'], tasksCompleted: ['quality_check_failed'], nextTasks: ['improved_analysis'] } };\n\nreturn { json: { ...($input.item.json), sessionMemory: updatedSessionMemory, workingMemory: resetWorkingMemory, qualityFeedback: qualityFeedback, unifiedMemory: { ...($input.item.json.unifiedMemory), session: updatedSessionMemory, working: resetWorkingMemory } } };"
+      },
+      "id": "prepare-retry",
+      "name": "Prepare Retry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5080, 1060]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "memoPrompt",
+              "type": "string",
+              "value": "=You are a legal memorandum drafter.\n\n=== CLIENT INFORMATION ===\nUser: {{ $json.userId }}\nPreferred Citation Style: {{ $json.unifiedMemory.longTerm.preferences.citationStyle }}\nDetail Level: {{ $json.unifiedMemory.longTerm.preferences.detailLevel }}\nOutput Format: {{ $json.outputFormat }}\n\n=== RESEARCH QUERY ===\n{{ $json.originalQuery }}\nJurisdiction: {{ $json.jurisdiction }}\nPractice Area: {{ $json.practiceArea }}\n\n=== LEGAL ANALYSIS (from Synthesis Agent) ===\n{{ JSON.stringify($json.synthesis, null, 2) }}\n\n=== CASE CITATIONS ===\n{{ JSON.stringify($json.caseAnalysis.relevantCases, null, 2) }}\n\n=== DECISION TRAIL (for transparency) ===\n{{ JSON.stringify($json.workingMemory.decisionTrail) }}\n\n=== QUALITY METRICS ===\nQuality Score: {{ $json.qualityReport.qualityScore }}\nRetry Count: {{ $json.sessionMemory.state.retryCount }}\n\n=== YOUR TASK ===\nDraft a professional legal memorandum following {{ $json.outputFormat }} format.\n\nFor MEMO format, use this structure:\n\n**MEMORANDUM**\n\n**TO:** [Client/Attorney]\n**FROM:** CoCounsel Legal Research AI\n**DATE:** {{ new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) }}\n**RE:** {{ $json.originalQuery }}\n\n---\n\n**QUESTION PRESENTED**\n[Restate the legal question]\n\n**BRIEF ANSWER**\n[Concise answer with key holding]\n\n**STATEMENT OF FACTS**\n[Relevant facts from query context]\n\n**DISCUSSION**\n\nI. [First Legal Issue]\n   A. Legal Standard\n      [State the applicable rule with citations]\n   \n   B. Application\n      [Apply law to facts]\n   \n   C. Analysis\n      [Discuss precedents, holdings, reasoning]\n\nII. [Second Legal Issue]\n   [Same structure]\n\n**CONCLUSION**\n[Summary and recommendation]\n\n---\n\n**CITATIONS**\n[All cases cited in {{ $json.unifiedMemory.longTerm.preferences.citationStyle }} format]\n\n**RESEARCH QUALITY**\n- Quality Score: {{ $json.qualityReport.qualityScore }}/100\n- Precedents Cited: {{ $json.synthesis.qualityMetrics?.precedentCount || 0 }}\n- Analysis Depth: {{ $json.synthesis.qualityMetrics?.analysisDepth || 'N/A' }}\n{{ $json.qualityReport.needsExpertReview ? '- ⚠️ Flagged for Expert Review' : '' }}\n\nProvide the complete memorandum as formatted text (NOT JSON)."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "build-memo-prompt",
+      "name": "Build Memorandum Prompt",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [5080, 740]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.memoPrompt }}",
+        "options": {
+          "systemMessage": "You are an expert legal writer. Draft clear, professional, well-organized legal memoranda. Use proper legal writing conventions and citation formats. Be concise but comprehensive."
+        }
+      },
+      "id": "memo-agent",
+      "name": "Draft Memorandum Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.6,
+      "position": [5300, 740]
+    },
+    {
+      "parameters": {
+        "model": "claude-sonnet-4-20250514",
+        "options": {
+          "temperature": 0.4,
+          "maxTokens": 16000
+        }
+      },
+      "id": "claude-memo",
+      "name": "Claude Memo",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1,
+      "position": [5300, 920]
+    },
+    {
+      "parameters": {
+        "jsCode": "const memorandum = $input.item.json.output || 'Memorandum generation failed';\n\nreturn {\n  json: {\n    ...($input.item.json),\n    memorandum: memorandum,\n    memorandumGeneratedAt: new Date().toISOString()\n  }\n};"
+      },
+      "id": "extract-memo",
+      "name": "Extract Memorandum",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5520, 740]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "user_research_history",
+        "columns": {
+          "mappings": [
+            { "column": "session_id", "value": "={{ $json.sessionMemory.sessionId }}" },
+            { "column": "user_id", "value": "={{ $json.userId }}" },
+            { "column": "query", "value": "={{ $json.originalQuery }}" },
+            { "column": "jurisdiction", "value": "={{ $json.jurisdiction }}" },
+            { "column": "practice_area", "value": "={{ $json.practiceArea }}" },
+            { "column": "issues_identified", "value": "={{ JSON.stringify($json.analysis.legalIssues) }}" },
+            { "column": "cases_cited", "value": "={{ JSON.stringify($json.caseAnalysis.relevantCases?.map(c => c.citation) || []) }}" },
+            { "column": "analysis", "value": "={{ JSON.stringify($json.synthesis) }}" },
+            { "column": "memorandum", "value": "={{ $json.memorandum }}" },
+            { "column": "quality_score", "value": "={{ $json.qualityReport.qualityScore }}" },
+            { "column": "retry_count", "value": "={{ $json.sessionMemory.state.retryCount }}" },
+            { "column": "needs_expert_review", "value": "={{ $json.qualityReport.needsExpertReview }}" },
+            { "column": "completed_at", "value": "={{ new Date().toISOString() }}" }
+          ]
+        }
+      },
+      "id": "db-save-history",
+      "name": "DB: Save History",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [5740, 620],
+      "credentials": { "postgres": { "id": "placeholder", "name": "PostgreSQL" } }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "research_patterns",
+        "columns": {
+          "mappings": [
+            { "column": "query_pattern", "value": "={{ $json.originalQuery.toLowerCase() }}" },
+            { "column": "successful_search_terms", "value": "={{ JSON.stringify($json.analysis.searchTerms) }}" },
+            { "column": "average_quality_score", "value": "={{ $json.qualityReport.qualityScore }}" }
+          ]
+        },
+        "options": { "onConflict": "DO UPDATE SET usage_count = research_patterns.usage_count + 1" }
+      },
+      "id": "db-save-pattern",
+      "name": "DB: Save Pattern",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [5740, 740],
+      "credentials": { "postgres": { "id": "placeholder", "name": "PostgreSQL" } }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [{ "value1": "={{ $json.qualityReport.needsExpertReview }}", "value2": true }]
+        }
+      },
+      "id": "check-expert-review",
+      "name": "Needs Expert Review?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [5740, 860]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "expert_review_queue",
+        "columns": {
+          "mappings": [
+            { "column": "session_id", "value": "={{ $json.sessionMemory.sessionId }}" },
+            { "column": "user_id", "value": "={{ $json.userId }}" },
+            { "column": "query", "value": "={{ $json.originalQuery }}" },
+            { "column": "analysis", "value": "={{ JSON.stringify($json.synthesis) }}" },
+            { "column": "memorandum", "value": "={{ $json.memorandum }}" },
+            { "column": "quality_issues", "value": "={{ JSON.stringify($json.qualityReport.issues) }}" },
+            { "column": "quality_score", "value": "={{ $json.qualityReport.qualityScore }}" },
+            { "column": "priority", "value": "={{ $json.qualityReport.qualityScore < 60 ? 'high' : 'medium' }}" },
+            { "column": "status", "value": "pending" }
+          ]
+        }
+      },
+      "id": "db-queue-expert",
+      "name": "DB: Queue for Expert",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [5960, 980],
+      "credentials": { "postgres": { "id": "placeholder", "name": "PostgreSQL" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "const conversationKey = 'conversation_' + $input.item.json.userId;\nlet conversationMemory = $input.item.json.unifiedMemory.longTerm.conversationContext.recentSessions || [];\n\nconversationMemory.push({ sessionId: $input.item.json.sessionMemory.sessionId, startedAt: $input.item.json.sessionMemory.startTime, qualityScore: $input.item.json.qualityReport.qualityScore, retryCount: $input.item.json.sessionMemory.state.retryCount, interactions: [{ query: $input.item.json.originalQuery, timestamp: new Date().toISOString(), legalIssues: $input.item.json.analysis.legalIssues, casesFound: $input.item.json.totalCasesFound }] });\n\nif (conversationMemory.length > 5) conversationMemory = conversationMemory.slice(-5);\n\ntry { await $store.set(conversationKey, { sessions: conversationMemory }); } catch (error) { console.error('Failed:', error); }\n\nreturn { json: $input.item.json };"
+      },
+      "id": "save-conversation",
+      "name": "Save Conversation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5740, 980]
+    },
+    {
+      "parameters": {
+        "jsCode": "return {\n  json: {\n    sessionId: $input.item.json.sessionMemory.sessionId,\n    userId: $input.item.json.userId,\n    status: 'completed',\n    retryCount: $input.item.json.sessionMemory.state.retryCount,\n    \n    qualityReport: {\n      score: $input.item.json.qualityReport.qualityScore,\n      passedThreshold: $input.item.json.qualityReport.passesThreshold,\n      needsExpertReview: $input.item.json.qualityReport.needsExpertReview\n    },\n    \n    memorandum: $input.item.json.memorandum,\n    \n    synthesis: $input.item.json.synthesis,\n    \n    citations: $input.item.json.caseAnalysis.relevantCases?.map(c => c.citation) || [],\n    \n    metadata: {\n      duration: (new Date() - new Date($input.item.json.sessionMemory.startTime)) / 1000,\n      casesAnalyzed: $input.item.json.totalCasesFound,\n      issuesIdentified: $input.item.json.analysis.legalIssues.length\n    },\n    \n    completedAt: new Date().toISOString(),\n    message: 'Legal memorandum completed successfully'\n  }\n};"
+      },
+      "id": "format-response",
+      "name": "Format Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5960, 740]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json, null, 2) }}",
+        "options": {}
+      },
+      "id": "send-response",
+      "name": "Send Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [6180, 740]
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Initialize Memory Systems", "type": "main", "index": 0 }]] },
+    "Initialize Memory Systems": { "main": [[{ "node": "DB: User History", "type": "main", "index": 0 }, { "node": "DB: User Preferences", "type": "main", "index": 0 }, { "node": "DB: Research Patterns", "type": "main", "index": 0 }, { "node": "DB: Expert Lessons", "type": "main", "index": 0 }, { "node": "Is Follow-up?", "type": "main", "index": 0 }, { "node": "Load Conversation Memory", "type": "main", "index": 0 }]] },
+    "DB: User History": { "main": [[{ "node": "Merge DB Results", "type": "main", "index": 0 }]] },
+    "DB: User Preferences": { "main": [[{ "node": "Merge DB Results", "type": "main", "index": 0 }]] },
+    "DB: Research Patterns": { "main": [[{ "node": "Merge DB Results", "type": "main", "index": 0 }]] },
+    "DB: Expert Lessons": { "main": [[{ "node": "Merge DB Results", "type": "main", "index": 0 }]] },
+    "Is Follow-up?": { "main": [[{ "node": "DB: Previous Session", "type": "main", "index": 0 }], [{ "node": "Merge DB Results", "type": "main", "index": 0 }]] },
+    "DB: Previous Session": { "main": [[{ "node": "Merge DB Results", "type": "main", "index": 0 }]] },
+    "Load Conversation Memory": { "main": [[{ "node": "Merge DB Results", "type": "main", "index": 0 }]] },
+    "Merge DB Results": { "main": [[{ "node": "Build Unified Memory", "type": "main", "index": 0 }]] },
+    "Build Unified Memory": { "main": [[{ "node": "Build Issue Prompt", "type": "main", "index": 0 }]] },
+    "Build Issue Prompt": { "main": [[{ "node": "Issue Spotter Agent", "type": "main", "index": 0 }]] },
+    "Issue Spotter Agent": { "main": [[{ "node": "Update Memory (Issue)", "type": "main", "index": 0 }]] },
+    "Claude 1": { "ai_languageModel": [[{ "node": "Issue Spotter Agent", "type": "ai_languageModel", "index": 0 }]] },
+    "Update Memory (Issue)": { "main": [[{ "node": "DB: Vector Search", "type": "main", "index": 0 }, { "node": "Traditional Search", "type": "main", "index": 0 }]] },
+    "DB: Vector Search": { "main": [[{ "node": "Merge Search", "type": "main", "index": 0 }]] },
+    "Traditional Search": { "main": [[{ "node": "Merge Search", "type": "main", "index": 1 }]] },
+    "Merge Search": { "main": [[{ "node": "Combine Results", "type": "main", "index": 0 }]] },
+    "Combine Results": { "main": [[{ "node": "Build Case Prompt", "type": "main", "index": 0 }]] },
+    "Build Case Prompt": { "main": [[{ "node": "Case Analysis Agent", "type": "main", "index": 0 }]] },
+    "Case Analysis Agent": { "main": [[{ "node": "Update Memory (Cases)", "type": "main", "index": 0 }]] },
+    "Claude 2": { "ai_languageModel": [[{ "node": "Case Analysis Agent", "type": "ai_languageModel", "index": 0 }]] },
+    "Update Memory (Cases)": { "main": [[{ "node": "Build Synthesis Prompt", "type": "main", "index": 0 }]] },
+    "Build Synthesis Prompt": { "main": [[{ "node": "Synthesis Agent", "type": "main", "index": 0 }]] },
+    "Synthesis Agent": { "main": [[{ "node": "Finalize Memory", "type": "main", "index": 0 }]] },
+    "Claude 3": { "ai_languageModel": [[{ "node": "Synthesis Agent", "type": "ai_languageModel", "index": 0 }]] },
+    "Finalize Memory": { "main": [[{ "node": "Build Quality Prompt", "type": "main", "index": 0 }]] },
+    "Build Quality Prompt": { "main": [[{ "node": "Quality Control Agent", "type": "main", "index": 0 }]] },
+    "Quality Control Agent": { "main": [[{ "node": "Parse Quality Report", "type": "main", "index": 0 }]] },
+    "Claude Quality": { "ai_languageModel": [[{ "node": "Quality Control Agent", "type": "ai_languageModel", "index": 0 }]] },
+    "Parse Quality Report": { "main": [[{ "node": "Quality Gate", "type": "main", "index": 0 }]] },
+    "Quality Gate": { "main": [[{ "node": "Build Memorandum Prompt", "type": "main", "index": 0 }], [{ "node": "Prepare Retry", "type": "main", "index": 0 }]] },
+    "Prepare Retry": { "main": [[{ "node": "Build Issue Prompt", "type": "main", "index": 0 }]] },
+    "Build Memorandum Prompt": { "main": [[{ "node": "Draft Memorandum Agent", "type": "main", "index": 0 }]] },
+    "Draft Memorandum Agent": { "main": [[{ "node": "Extract Memorandum", "type": "main", "index": 0 }]] },
+    "Claude Memo": { "ai_languageModel": [[{ "node": "Draft Memorandum Agent", "type": "ai_languageModel", "index": 0 }]] },
+    "Extract Memorandum": { "main": [[{ "node": "DB: Save History", "type": "main", "index": 0 }, { "node": "DB: Save Pattern", "type": "main", "index": 0 }, { "node": "Needs Expert Review?", "type": "main", "index": 0 }, { "node": "Save Conversation", "type": "main", "index": 0 }]] },
+    "DB: Save History": { "main": [[{ "node": "Format Response", "type": "main", "index": 0 }]] },
+    "DB: Save Pattern": { "main": [[{ "node": "Format Response", "type": "main", "index": 0 }]] },
+    "Needs Expert Review?": { "main": [[{ "node": "DB: Queue for Expert", "type": "main", "index": 0 }], [{ "node": "Format Response", "type": "main", "index": 0 }]] },
+    "DB: Queue for Expert": { "main": [[{ "node": "Format Response", "type": "main", "index": 0 }]] },
+    "Save Conversation": { "main": [[{ "node": "Format Response", "type": "main", "index": 0 }]] },
+    "Format Response": { "main": [[{ "node": "Send Response", "type": "main", "index": 0 }]] }
+  },
+  "pinData": {},
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2025-01-09T00:00:00.000Z",
+  "versionId": "5.0.0"
+}

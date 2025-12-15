@@ -1,0 +1,298 @@
+version: '3.8'
+
+services:
+  # ============================================
+  # PostgreSQL with pgvector (Supabase DB)
+  # ============================================
+  db:
+    image: supabase/postgres:15.1.0.117
+    container_name: cocounsel-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: /var/run/postgresql
+      POSTGRES_DB: ${POSTGRES_DB:-cocounsel}
+      POSTGRES_USER: ${POSTGRES_USER:-supabase_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Please set POSTGRES_PASSWORD in .env}
+      POSTGRES_PORT: 5432
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sh:/docker-entrypoint-initdb.d/01-init-db.sh:ro
+      - ./scripts/schema.sql:/docker-entrypoint-initdb.d/02-schema.sql:ro
+      - ./scripts/mock-data.sql:/docker-entrypoint-initdb.d/03-mock-data.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-supabase_admin} -d ${POSTGRES_DB:-cocounsel}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cocounsel_network
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=5
+      - -c
+      - max_wal_senders=5
+
+  # ============================================
+  # Supabase Studio (Database UI)
+  # ============================================
+  supabase-studio:
+    image: supabase/studio:20231123-64bdf5f
+    container_name: cocounsel-supabase
+    restart: unless-stopped
+    environment:
+      SUPABASE_URL: http://kong:8000
+      STUDIO_PG_META_URL: http://meta:8080
+      SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
+    ports:
+      - "${SUPABASE_STUDIO_PORT:-8000}:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - cocounsel_network
+
+  # ============================================
+  # Supabase Meta (Database API)
+  # ============================================
+  meta:
+    image: supabase/postgres-meta:v0.68.0
+    container_name: cocounsel-meta
+    restart: unless-stopped
+    environment:
+      PG_META_PORT: 8080
+      PG_META_DB_HOST: db
+      PG_META_DB_PORT: 5432
+      PG_META_DB_NAME: ${POSTGRES_DB:-cocounsel}
+      PG_META_DB_USER: ${POSTGRES_USER:-supabase_admin}
+      PG_META_DB_PASSWORD: ${POSTGRES_PASSWORD}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - cocounsel_network
+
+  # ============================================
+  # Supabase Kong (API Gateway) - Optional
+  # ============================================
+  kong:
+    image: kong:2.8.1
+    container_name: cocounsel-kong
+    restart: unless-stopped
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /var/lib/kong/kong.yml
+      KONG_DNS_ORDER: LAST,A,CNAME
+      KONG_PLUGINS: request-transformer,cors,key-auth,acl
+      KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
+      KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k
+    ports:
+      - "${KONG_HTTP_PORT:-8001}:8000"
+      - "${KONG_HTTPS_PORT:-8443}:8443"
+    volumes:
+      - ./config/kong.yml:/var/lib/kong/kong.yml:ro
+    depends_on:
+      - db
+    networks:
+      - cocounsel_network
+
+  # ============================================
+  # Redis (Caching & Sessions)
+  # ============================================
+  redis:
+    image: redis:7-alpine
+    container_name: cocounsel-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-cocounsel_redis}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cocounsel_network
+
+  # ============================================
+  # n8n Workflow Automation
+  # ============================================
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: cocounsel-n8n
+    restart: unless-stopped
+    environment:
+      # Basic Configuration
+      - N8N_HOST=${N8N_HOST:-0.0.0.0}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=${N8N_PROTOCOL:-http}
+      - NODE_ENV=production
+      - WEBHOOK_URL=${WEBHOOK_URL:-http://localhost:5678/}
+      
+      # Authentication
+      - N8N_BASIC_AUTH_ACTIVE=${N8N_BASIC_AUTH_ACTIVE:-true}
+      - N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD:?Please set N8N_BASIC_AUTH_PASSWORD in .env}
+      
+      # Database (PostgreSQL)
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=db
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8n
+      - DB_POSTGRESDB_USER=${POSTGRES_USER:-supabase_admin}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+      - DB_POSTGRESDB_SCHEMA=n8n
+      
+      # Execution
+      - EXECUTIONS_MODE=regular
+      - EXECUTIONS_DATA_SAVE_ON_ERROR=all
+      - EXECUTIONS_DATA_SAVE_ON_SUCCESS=all
+      - EXECUTIONS_DATA_SAVE_MANUAL_EXECUTIONS=true
+      
+      # Timezone
+      - GENERIC_TIMEZONE=${TIMEZONE:-America/Los_Angeles}
+      
+      # Redis (for queue mode - optional)
+      - QUEUE_BULL_REDIS_HOST=redis
+      - QUEUE_BULL_REDIS_PORT=6379
+      - QUEUE_BULL_REDIS_PASSWORD=${REDIS_PASSWORD:-cocounsel_redis}
+      
+      # External Hooks (optional)
+      - EXTERNAL_HOOK_FILES=/data/external-hooks/hooks.js
+      
+      # Logging
+      - N8N_LOG_LEVEL=${N8N_LOG_LEVEL:-info}
+      - N8N_LOG_OUTPUT=console
+      
+      # Security
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      - N8N_SECURE_COOKIE=${N8N_SECURE_COOKIE:-false}
+      
+    ports:
+      - "${N8N_PORT:-5678}:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./workflows:/data/workflows:ro
+      - ./scripts/external-hooks:/data/external-hooks:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - cocounsel_network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:5678/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+
+  # ============================================
+  # Supabase Storage (Optional - for file uploads)
+  # ============================================
+  storage:
+    image: supabase/storage-api:v0.40.4
+    container_name: cocounsel-storage
+    restart: unless-stopped
+    environment:
+      ANON_KEY: ${SUPABASE_ANON_KEY}
+      SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
+      POSTGREST_URL: http://rest:3000
+      PGRST_JWT_SECRET: ${SUPABASE_JWT_SECRET}
+      DATABASE_URL: postgres://${POSTGRES_USER:-supabase_admin}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-cocounsel}
+      FILE_SIZE_LIMIT: 52428800
+      STORAGE_BACKEND: file
+      FILE_STORAGE_BACKEND_PATH: /var/lib/storage
+      TENANT_ID: stub
+      REGION: stub
+      GLOBAL_S3_BUCKET: stub
+      ENABLE_IMAGE_TRANSFORMATION: "true"
+      IMGPROXY_URL: http://imgproxy:5001
+    ports:
+      - "${STORAGE_PORT:-8080}:5000"
+    volumes:
+      - storage_data:/var/lib/storage
+    depends_on:
+      - db
+    networks:
+      - cocounsel_network
+    profiles:
+      - storage
+
+  # ============================================
+  # Imgproxy (Image transformation - optional)
+  # ============================================
+  imgproxy:
+    image: darthsim/imgproxy:v3.8
+    container_name: cocounsel-imgproxy
+    restart: unless-stopped
+    environment:
+      IMGPROXY_BIND: :5001
+      IMGPROXY_LOCAL_FILESYSTEM_ROOT: /
+      IMGPROXY_USE_ETAG: "true"
+    volumes:
+      - storage_data:/var/lib/storage
+    networks:
+      - cocounsel_network
+    profiles:
+      - storage
+
+  # ============================================
+  # Traefik Reverse Proxy (Optional - for SSL)
+  # ============================================
+  # Uncomment this section for production with SSL
+  # traefik:
+  #   image: traefik:v2.10
+  #   container_name: cocounsel-traefik
+  #   restart: unless-stopped
+  #   command:
+  #     - --api.insecure=false
+  #     - --providers.docker=true
+  #     - --providers.docker.exposedbydefault=false
+  #     - --entrypoints.web.address=:80
+  #     - --entrypoints.websecure.address=:443
+  #     - --certificatesresolvers.letsencrypt.acme.tlschallenge=true
+  #     - --certificatesresolvers.letsencrypt.acme.email=${LETSENCRYPT_EMAIL}
+  #     - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock:ro
+  #     - traefik_letsencrypt:/letsencrypt
+  #   networks:
+  #     - cocounsel_network
+
+volumes:
+  db_data:
+    driver: local
+  n8n_data:
+    driver: local
+  redis_data:
+    driver: local
+  storage_data:
+    driver: local
+  # traefik_letsencrypt:
+  #   driver: local
+
+networks:
+  cocounsel_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
