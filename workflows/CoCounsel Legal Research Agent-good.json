@@ -1,0 +1,1867 @@
+{
+  "name": "CoCounsel Legal Research Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "legal-research",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "bd8bad5c-bd97-4872-b573-66911112f9b3",
+      "name": "Webhook - Legal Query",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        -2928,
+        272
+      ],
+      "webhookId": "legal-research-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract and structure the incoming legal query\nconst query = $input.item.json.body.query;\nconst jurisdiction = $input.item.json.body.jurisdiction || 'federal';\nconst practiceArea = $input.item.json.body.practiceArea || 'general';\nconst userId = $input.item.json.body.userId;\n\nreturn {\n  json: {\n    originalQuery: query,\n    jurisdiction: jurisdiction,\n    practiceArea: practiceArea,\n    userId: userId,\n    timestamp: new Date().toISOString(),\n    sessionId: `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`\n  }\n};"
+      },
+      "id": "2ee2b2a1-1e03-461f-bb2f-4dd59a9d5083",
+      "name": "Parse Legal Query",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2704,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Update working memory after issue spotting stage\nconst input = $input.item.json;\n\n// Get the working memory from input (includes queryContext from initialization)\nconst workingMemory = input.workingMemory || {\n  sessionId: input.sessionId,\n  queryContext: {},\n  legalContext: {},\n  decisionTrail: [],\n  intermediateResults: {}\n};\n\n// Add identified issues to legal context from the output object\nworkingMemory.legalContext.identifiedIssues = input.output.legalIssues || [];\nworkingMemory.legalContext.searchTerms = input.output.searchTerms || [];\nworkingMemory.legalContext.practiceAreas = input.output.practiceAreas || [];\n\n// Create decision trail entry\nworkingMemory.decisionTrail.push({\n  stage: 'issue_spotting',\n  timestamp: new Date().toISOString(),\n  input: {\n    originalQuery: workingMemory.queryContext?.originalQuery,\n    jurisdiction: workingMemory.queryContext?.jurisdiction,\n    practiceArea: workingMemory.queryContext?.practiceArea\n  },\n  output: {\n    legalIssues: input.output.legalIssues,\n    searchTerms: input.output.searchTerms,\n    practiceAreas: input.output.practiceAreas\n  },\n  reasoning: 'Identified legal issues and generated search terms for case law research'\n});\n\n// Store intermediate results\nworkingMemory.intermediateResults.issueSpotting = {\n  legalIssues: input.output.legalIssues,\n  searchTerms: input.output.searchTerms,\n  practiceAreas: input.output.practiceAreas,\n  completedAt: new Date().toISOString()\n};\n\nreturn {\n  json: {\n    ...input,\n    workingMemory: workingMemory\n  }\n};"
+      },
+      "id": "58b0320f-d152-4af1-8512-a0818d4af368",
+      "name": "Split Search Queries",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1680,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://www.courtlistener.com/api/rest/v4/search/",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "q",
+              "value": "={{ $json.workingMemory.legalContext.searchTerms.join(' ') }}"
+            },
+            {
+              "name": "type",
+              "value": "o"
+            },
+            {
+              "name": "order_by",
+              "value": "score desc"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Token efa62df64ebc1bcbea21f18d79d2e1bcc743ac5a"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "59e67ec1-13cb-407e-8b7d-8385d255c007",
+      "name": "Case Law Database Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        -1424,
+        272
+      ],
+      "notes": "Replace with actual legal database API (Westlaw, LexisNexis, etc.)"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Combine all case analyses\nconst allResults = $input.all();\n\n// Extract the case analysis from each result\nconst caseAnalyses = allResults.map(item => item.json.output?.caseAnalysis).filter(Boolean);\n\nconst aggregated = {\n  sessionId: allResults[0].json.sessionId || allResults[0].json.workingMemory?.queryContext?.sessionId,\n  originalQuery: allResults[0].json.workingMemory?.queryContext?.originalQuery || '',\n  jurisdiction: allResults[0].json.workingMemory?.queryContext?.jurisdiction || 'California',\n  analysis: allResults[0].json.output || {},\n  caseAnalyses: caseAnalyses,\n  totalCasesFound: caseAnalyses.reduce((sum, analysis) => \n    sum + (analysis?.relevantCases?.length || 0), 0\n  )\n};\n\nreturn { json: aggregated };"
+      },
+      "id": "8b871271-6258-436b-a07d-3b7401df458c",
+      "name": "Merge All Analyses",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -656,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "{{ $json.expertReviewNeededString }}",
+              "value2": "true"
+            }
+          ]
+        }
+      },
+      "id": "43c91e03-670a-4169-8848-506fed696057",
+      "name": "Needs Expert Review?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        720,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Flag for human expert review\nreturn {\n  json: {\n    ...($input.item.json),\n    status: 'pending_expert_review',\n    flaggedAt: new Date().toISOString(),\n    reviewPriority: $input.item.json.qualityReport.confidenceRating === 'low' ? 'high' : 'medium'\n  }\n};"
+      },
+      "id": "ee9fa75e-c1f4-45ea-9e12-b41690157641",
+      "name": "Flag for Expert Review",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1008,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "legal_research",
+          "mode": "list",
+          "cachedResultName": "legal_research"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {
+            "expert_review_needed": "={{ $('Quality Assurance Agent').item.json.output.qualityReport.expertReviewNeeded }}",
+            "session_id": "{{ $('Parse Legal Query').item.json.sessionId }}",
+            "user_id": "{{ $('Parse Legal Query').item.json.userId }}",
+            "original_query": "{{ $('Parse Legal Query').item.json.originalQuery }}",
+            "jurisdiction": "{{ $('Parse Legal Query').item.json.jurisdiction }}",
+            "practice_area": "{{ $('Parse Legal Query').item.json.practiceArea }}",
+            "search_terms": "={{ $json.search_terms }}",
+            "practice_areas": "={{ $json.practice_areas }}",
+            "case_analyses": "={{ $json.case_analyses }}",
+            "relevant_cases": "={{ $json.relevant_cases }}",
+            "key_findings": "={{ $json.key_findings }}",
+            "executive_summary": "{{ $('Legal Synthesis Agent').item.json.output.synthesis.executiveSummary }}",
+            "legal_analysis": "{{ $('Legal Synthesis Agent').item.json.output.synthesis.legalAnalysis }}",
+            "precedents": "={{ $json.precedents }}",
+            "recommendations": "={{ $json.recommendations }}",
+            "quality_score": "={{ $('Quality Assurance Agent').item.json.output.qualityReport.qualityScore }}",
+            "confidence_rating": "{{ $('Quality Assurance Agent').item.json.output.qualityReport.confidenceRating }}",
+            "quality_gaps": "={{ $json.quality_gaps }}",
+            "quality_strengths": "={{ $json.quality_strengths }}",
+            "memorandum": "{{ $('Draft Legal Memorandum').item.json.output }}",
+            "id": 0,
+            "legal_issues": "={{ $json.legal_issues }}"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "session_id",
+              "displayName": "session_id",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "user_id",
+              "displayName": "user_id",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "original_query",
+              "displayName": "original_query",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "jurisdiction",
+              "displayName": "jurisdiction",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "practice_area",
+              "displayName": "practice_area",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "legal_issues",
+              "displayName": "legal_issues",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "search_terms",
+              "displayName": "search_terms",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "practice_areas",
+              "displayName": "practice_areas",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "case_analyses",
+              "displayName": "case_analyses",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "relevant_cases",
+              "displayName": "relevant_cases",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "key_findings",
+              "displayName": "key_findings",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "executive_summary",
+              "displayName": "executive_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "legal_analysis",
+              "displayName": "legal_analysis",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "precedents",
+              "displayName": "precedents",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "recommendations",
+              "displayName": "recommendations",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "quality_score",
+              "displayName": "quality_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "confidence_rating",
+              "displayName": "confidence_rating",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "expert_review_needed",
+              "displayName": "expert_review_needed",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "quality_gaps",
+              "displayName": "quality_gaps",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "quality_strengths",
+              "displayName": "quality_strengths",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "memorandum",
+              "displayName": "memorandum",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "updated_at",
+              "displayName": "updated_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "5fb73f9d-f6e0-439f-8f4c-2fe3cdccfbea",
+      "name": "Save to Review Queue",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.2,
+      "position": [
+        1520,
+        176
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "foQk02B0KzpxK2iV",
+          "name": "Postgres account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "legal_research",
+          "mode": "list",
+          "cachedResultName": "legal_research"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {
+            "expert_review_needed": "={{ $('Quality Assurance Agent').item.json.output.qualityReport.expertReviewNeeded }}",
+            "session_id": "{{ $('Parse Legal Query').item.json.sessionId }}",
+            "user_id": "{{ $('Parse Legal Query').item.json.userId }}",
+            "original_query": "{{ $('Parse Legal Query').item.json.originalQuery }}",
+            "jurisdiction": "{{ $('Parse Legal Query').item.json.jurisdiction }}",
+            "practice_area": "{{ $('Parse Legal Query').item.json.practiceArea }}",
+            "legal_issues": "={{ $json.legal_issues }}",
+            "search_terms": "={{ $json.search_terms }}",
+            "practice_areas": "={{ $json.practice_areas }}",
+            "case_analyses": "={{ $json.case_analyses }}",
+            "relevant_cases": "={{ $json.relevant_cases }}",
+            "key_findings": "={{ $json.key_findings }}",
+            "executive_summary": "{{ $('Legal Synthesis Agent').item.json.output.synthesis.executiveSummary }}",
+            "legal_analysis": "{{ $('Legal Synthesis Agent').item.json.output.synthesis.legalAnalysis }}",
+            "precedents": "={{ $json.precedents }}",
+            "recommendations": "={{ $json.recommendations }}",
+            "quality_score": "={{ $('Quality Assurance Agent').item.json.output.qualityReport.qualityScore }}",
+            "confidence_rating": "{{ $('Quality Assurance Agent').item.json.output.qualityReport.confidenceRating }}",
+            "quality_gaps": "={{ $json.quality_gaps }}",
+            "quality_strengths": "={{ $json.quality_strengths }}",
+            "memorandum": "{{ $('Draft Legal Memorandum').item.json.output }}",
+            "id": 0
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "session_id",
+              "displayName": "session_id",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "user_id",
+              "displayName": "user_id",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "original_query",
+              "displayName": "original_query",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "jurisdiction",
+              "displayName": "jurisdiction",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "practice_area",
+              "displayName": "practice_area",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "legal_issues",
+              "displayName": "legal_issues",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "search_terms",
+              "displayName": "search_terms",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "practice_areas",
+              "displayName": "practice_areas",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "case_analyses",
+              "displayName": "case_analyses",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "relevant_cases",
+              "displayName": "relevant_cases",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "key_findings",
+              "displayName": "key_findings",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "executive_summary",
+              "displayName": "executive_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "legal_analysis",
+              "displayName": "legal_analysis",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "precedents",
+              "displayName": "precedents",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "recommendations",
+              "displayName": "recommendations",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "quality_score",
+              "displayName": "quality_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "confidence_rating",
+              "displayName": "confidence_rating",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "expert_review_needed",
+              "displayName": "expert_review_needed",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "quality_gaps",
+              "displayName": "quality_gaps",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "quality_strengths",
+              "displayName": "quality_strengths",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "memorandum",
+              "displayName": "memorandum",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "updated_at",
+              "displayName": "updated_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "0c93f544-6691-44bd-80b5-c7ffcffefebb",
+      "name": "Save Research Results",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.2,
+      "position": [
+        1520,
+        368
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "foQk02B0KzpxK2iV",
+          "name": "Postgres account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      },
+      "id": "a4370dbc-b7f0-42b5-aed2-3a62af965a80",
+      "name": "Merge Completion Paths",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        1744,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare final response\nconst needsReview = $input.item.json.status === 'pending_expert_review';\n\nreturn {\n  json: {\n    sessionId: $input.item.json.sessionId,\n    status: $input.item.json.status || 'completed',\n    needsExpertReview: needsReview,\n    executiveSummary: $input.item.json.synthesis?.executiveSummary,\n    qualityScore: $input.item.json.qualityReport?.qualityScore,\n    confidenceRating: $input.item.json.qualityReport?.confidenceRating,\n    memorandum: needsReview ? null : $input.item.json.memorandum,\n    message: needsReview \n      ? 'Research completed. Flagged for expert review due to complexity.'\n      : 'Research completed successfully.',\n    completedAt: new Date().toISOString(),\n    downloadUrl: needsReview \n      ? null \n      : `https://api.example.com/research/${$input.item.json.sessionId}/download`\n  }\n};"
+      },
+      "id": "2026897e-9313-4847-a773-669750d068cb",
+      "name": "Format Final Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2416,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json, null, 2) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "27fdd87b-2a80-46d7-b81a-2fc12c69c72b",
+      "name": "Send Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        2640,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "audit_log",
+          "mode": "list"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "expert_review_needed": "={{ $json.expert_review_needed }}",
+            "execution_time_seconds": "={{ $json.execution_time_seconds }}\n",
+            "cases_analyzed": "={{ $json.cases_analyzed }}",
+            "issues_identified": "={{ $json.issues_identified }}",
+            "recommendations_generated": "={{ $json.recommendations_generated }}",
+            "session_id": "{{ $json.session_id }}",
+            "user_id": "{{ $json.user_id }}",
+            "workflow_path": "{{ $json.workflow_path }}",
+            "final_action": "{{ $json.final_action }}",
+            "status": "{{ $json.status }}",
+            "started_at": "={{ $json.started_at }}",
+            "completed_at": "={{ $json.completed_at }}\n",
+            "quality_score": "={{ $json.quality_score }}",
+            "confidence_rating": "{{ $json.confidence_rating }}",
+            "original_query": "{{ $json.original_query }}",
+            "jurisdiction": "{{ $json.jurisdiction }}",
+            "practice_area": "{{ $json.practice_area }}",
+            "created_at": "={{ $now }}\n"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "session_id",
+              "displayName": "session_id",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "user_id",
+              "displayName": "user_id",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "workflow_path",
+              "displayName": "workflow_path",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "final_action",
+              "displayName": "final_action",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "started_at",
+              "displayName": "started_at",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "completed_at",
+              "displayName": "completed_at",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "execution_time_seconds",
+              "displayName": "execution_time_seconds",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "quality_score",
+              "displayName": "quality_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "confidence_rating",
+              "displayName": "confidence_rating",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "expert_review_needed",
+              "displayName": "expert_review_needed",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "original_query",
+              "displayName": "original_query",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "jurisdiction",
+              "displayName": "jurisdiction",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "practice_area",
+              "displayName": "practice_area",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "cases_analyzed",
+              "displayName": "cases_analyzed",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "issues_identified",
+              "displayName": "issues_identified",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "recommendations_generated",
+              "displayName": "recommendations_generated",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "metadata",
+              "displayName": "metadata",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "bb261de2-2e59-4da2-abd7-c81ffe9014db",
+      "name": "Audit Log",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.2,
+      "position": [
+        2192,
+        272
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "foQk02B0KzpxK2iV",
+          "name": "Postgres account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "claude-sonnet-4-20250514"
+        },
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "id": "ff18703b-c3c1-4dd3-b170-975c598e260f",
+      "name": "Anthropic Model - Issue Spotter",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        -2288,
+        496
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "eJiT1B0Q8DpkD2EP",
+          "name": "Anthropic account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n\t\"type\": \"object\",\n\t\"properties\": {\n\t\t\"legalIssues\": {\n\t\t\t\"type\": \"array\",\n\t\t\t\"items\": {\n\t\t\t\t\"type\": \"string\"\n\t\t\t}\n\t\t},\n\t\t\"searchTerms\": {\n\t\t\t\"type\": \"array\",\n\t\t\t\"items\": {\n\t\t\t\t\"type\": \"string\"\n\t\t\t}\n\t\t},\n\t\t\"practiceAreas\": {\n\t\t\t\"type\": \"array\",\n\t\t\t\"items\": {\n\t\t\t\t\"type\": \"string\"\n\t\t\t}\n\t\t}\n\t},\n\t\"required\": [\"legalIssues\", \"searchTerms\", \"practiceAreas\"]\n}"
+      },
+      "id": "e25471eb-f444-4cae-8616-44d793e16f0f",
+      "name": "Issue Spotter Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        -2080,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.originalQuery }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are a legal issue spotter. Analyze the legal query and identify:\n1. All legal issues present\n2. Relevant search terms for case law research\n3. Practice areas involved\n\nProvide comprehensive analysis to guide thorough legal research."
+        }
+      },
+      "id": "1a0119b2-53b0-460a-a76d-9b76c5bb6947",
+      "name": "Issue Spotter Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        -2256,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "claude-sonnet-4-20250514"
+        },
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "id": "0b64f946-5bbe-4cf0-bf45-f8484c9f4e6a",
+      "name": "Anthropic Model - Case Analysis",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        -1312,
+        528
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "eJiT1B0Q8DpkD2EP",
+          "name": "Anthropic account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n\t\"type\": \"object\",\n\t\"properties\": {\n\t\t\"caseAnalysis\": {\n\t\t\t\"type\": \"object\",\n\t\t\t\"properties\": {\n\t\t\t\t\"relevantCases\": {\n\t\t\t\t\t\"type\": \"array\",\n\t\t\t\t\t\"items\": {\n\t\t\t\t\t\t\"type\": \"object\"\n\t\t\t\t\t}\n\t\t\t\t},\n\t\t\t\t\"keyFindings\": {\n\t\t\t\t\t\"type\": \"array\",\n\t\t\t\t\t\"items\": {\n\t\t\t\t\t\t\"type\": \"string\"\n\t\t\t\t\t}\n\t\t\t\t},\n\t\t\t\t\"applicability\": {\n\t\t\t\t\t\"type\": \"string\"\n\t\t\t\t}\n\t\t\t},\n\t\t\t\"required\": [\"relevantCases\", \"keyFindings\", \"applicability\"]\n\t\t}\n\t},\n\t\"required\": [\"caseAnalysis\"]\n}"
+      },
+      "id": "34c80ebe-750b-4a2b-b832-854faf38fb0e",
+      "name": "Case Analysis Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        -1104,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Query: {{ $('Parse Legal Query').item.json.originalQuery }}\nJurisdiction: {{ $('Parse Legal Query').item.json.jurisdiction }}\nSearch Results: {{ JSON.stringify($json) }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are a legal case analyst. Analyze the provided case law search results and:\n1. Identify the most relevant cases\n2. Extract key legal findings and precedents\n3. Assess applicability to the query\n\nProvide detailed analysis of how each case relates to the legal issues.\n\n\"Return your answer as a JSON object that exactly matches this schema: { \"state\": string, \"cities\": array of strings }. Do not include any introductory or closing remarks, and do not add any fields not shown in the schema.\""
+        }
+      },
+      "id": "697a916a-db14-4f87-b153-1cfd8d0e5d7a",
+      "name": "Case Analysis Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        -1232,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "claude-sonnet-4-20250514"
+        },
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "id": "0923cb6e-dbdd-4913-a954-6b419df71634",
+      "name": "Anthropic Model - Synthesis",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        -208,
+        496
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "eJiT1B0Q8DpkD2EP",
+          "name": "Anthropic account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n\t\"type\": \"object\",\n\t\"properties\": {\n\t\t\"synthesis\": {\n\t\t\t\"type\": \"object\",\n\t\t\t\"properties\": {\n\t\t\t\t\"executiveSummary\": {\n\t\t\t\t\t\"type\": \"string\"\n\t\t\t\t},\n\t\t\t\t\"legalAnalysis\": {\n\t\t\t\t\t\"type\": \"string\"\n\t\t\t\t},\n\t\t\t\t\"precedents\": {\n\t\t\t\t\t\"type\": \"array\",\n\t\t\t\t\t\"items\": {\n\t\t\t\t\t\t\"type\": \"string\"\n\t\t\t\t\t}\n\t\t\t\t},\n\t\t\t\t\"recommendations\": {\n\t\t\t\t\t\"type\": \"array\",\n\t\t\t\t\t\"items\": {\n\t\t\t\t\t\t\"type\": \"string\"\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t},\n\t\t\t\"required\": [\"executiveSummary\", \"legalAnalysis\", \"precedents\", \"recommendations\"]\n\t\t}\n\t},\n\t\"required\": [\"synthesis\"]\n}"
+      },
+      "id": "67acdcbc-f232-40b3-8bf7-4dd0625eb017",
+      "name": "Synthesis Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        -80,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Original Query: {{ $json.originalQuery }}\nCase Analyses: {{ JSON.stringify($json.caseAnalyses) }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are a legal synthesis expert. Synthesize all case analyses into:\n1. Executive summary of findings\n2. Comprehensive legal analysis\n3. Key precedents and their implications\n4. Strategic recommendations\n\nProvide clear, actionable insights for legal decision-making."
+        }
+      },
+      "id": "81631a9a-e78c-4a26-9268-ce26b7bf7c5a",
+      "name": "Legal Synthesis Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        -208,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "claude-sonnet-4-20250514"
+        },
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "id": "2cd44ef8-3dd2-4c59-bf90-eaa2a7ced741",
+      "name": "Anthropic Model - QA",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        384,
+        496
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "eJiT1B0Q8DpkD2EP",
+          "name": "Anthropic account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n\t\"type\": \"object\",\n\t\"properties\": {\n\t\t\"qualityReport\": {\n\t\t\t\"type\": \"object\",\n\t\t\t\"properties\": {\n\t\t\t\t\"qualityScore\": {\n\t\t\t\t\t\"type\": \"number\"\n\t\t\t\t},\n\t\t\t\t\"confidenceRating\": {\n\t\t\t\t\t\"type\": \"string\",\n\t\t\t\t\t\"enum\": [\"high\", \"medium\", \"low\"]\n\t\t\t\t},\n\t\t\t\t\"expertReviewNeeded\": {\n\t\t\t\t\t\"type\": \"boolean\"\n\t\t\t\t},\n\t\t\t\t\"gaps\": {\n\t\t\t\t\t\"type\": \"array\",\n\t\t\t\t\t\"items\": {\n\t\t\t\t\t\t\"type\": \"string\"\n\t\t\t\t\t}\n\t\t\t\t},\n\t\t\t\t\"strengths\": {\n\t\t\t\t\t\"type\": \"array\",\n\t\t\t\t\t\"items\": {\n\t\t\t\t\t\t\"type\": \"string\"\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t},\n\t\t\t\"required\": [\"qualityScore\", \"confidenceRating\", \"expertReviewNeeded\", \"gaps\", \"strengths\"]\n\t\t}\n\t},\n\t\"required\": [\"qualityReport\"]\n}"
+      },
+      "id": "1352eb2c-120f-450b-a6c1-bf4d2aeed11e",
+      "name": "QA Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        512,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Synthesis: {{ $json.synthesisText }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are a legal quality assurance expert. Review the legal synthesis and assess:\n1. Quality score (0-100)\n2. Confidence rating (high/medium/low)\n3. Whether expert review is needed\n4. Research gaps or weaknesses\n5. Strengths of the analysis\n\nBe thorough and flag complex cases for human expert review.\n\nIMPORTANT: For your response to user, you MUST use the `format_final_json_response` tool with your complete answer formatted according to the required schema. Do not attempt to format the JSON manually - always use this tool. Your response will be rejected if it is not properly formatted through this tool. Only use this tool once you are ready to provide your final answer."
+        }
+      },
+      "id": "ac72da97-2338-4c64-8bef-12df8874c564",
+      "name": "Quality Assurance Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        368,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "claude-sonnet-4-20250514"
+        },
+        "options": {
+          "temperature": 0.4
+        }
+      },
+      "id": "bb610889-4423-4492-8176-13fe48f088e0",
+      "name": "Anthropic Model - Memorandum",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        944,
+        656
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "eJiT1B0Q8DpkD2EP",
+          "name": "Anthropic account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Original Query: {{ $json.originalQuery }}\nSynthesis: {{ JSON.stringify($json.synthesis) }}\nQuality Report: {{ JSON.stringify($json.qualityReport) }}",
+        "options": {
+          "systemMessage": "You are a legal memorandum writer. Draft a comprehensive legal memorandum that includes:\n1. Issue statement\n2. Brief answer\n3. Facts\n4. Analysis with case citations\n5. Conclusion\n\nWrite in professional legal style with proper formatting and citations."
+        }
+      },
+      "id": "af9a88e5-f547-4f31-8f56-f255c7920f6f",
+      "name": "Draft Legal Memorandum",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        944,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "contextWindowLength": 10
+      },
+      "id": "9afd9550-a418-4a1f-b034-49c769fb94a1",
+      "name": "Session Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        -1200,
+        816
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Initialize working memory structure\nconst queryData = $input.item.json;\n\nreturn {\n  json: {\n    ...queryData,\n    workingMemory: {\n      queryContext: {\n        originalQuery: queryData.originalQuery,\n        jurisdiction: queryData.jurisdiction,\n        practiceArea: queryData.practiceArea,\n        sessionId: queryData.sessionId,\n        timestamp: queryData.timestamp\n      },\n      legalContext: {\n        identifiedIssues: [],\n        practiceAreas: [],\n        searchTerms: []\n      },\n      findings: {\n        caseAnalyses: [],\n        relevantCases: [],\n        keyFindings: []\n      },\n      decisionTrail: [\n        {\n          stage: 'initialization',\n          timestamp: new Date().toISOString(),\n          action: 'Working memory initialized'\n        }\n      ],\n      qualityMetrics: {\n        completeness: 0,\n        confidence: 0,\n        casesAnalyzed: 0\n      }\n    }\n  }\n};"
+      },
+      "id": "5600a44c-4a8f-49e9-a006-4dfb47db5c58",
+      "name": "Initialize Working Memory",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2480,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Update working memory after issue spotting stage\nconst input = $input.item.json;\n\n// Initialize or update working memory\nconst workingMemory = input.workingMemory || {\n  sessionId: input.sessionId,\n  legalContext: {},\n  decisionTrail: [],\n  intermediateResults: {}\n};\n\n// Add identified issues to legal context from the output object\nworkingMemory.legalContext.identifiedIssues = input.output.legalIssues || [];\nworkingMemory.legalContext.searchTerms = input.output.searchTerms || [];\nworkingMemory.legalContext.practiceAreas = input.output.practiceAreas || [];\n\n// Create decision trail entry\nworkingMemory.decisionTrail.push({\n  stage: 'issue_spotting',\n  timestamp: new Date().toISOString(),\n  input: {\n    originalQuery: workingMemory.queryContext?.originalQuery,\n    jurisdiction: workingMemory.queryContext?.jurisdiction,\n    practiceArea: workingMemory.queryContext?.practiceArea\n  },\n  output: {\n    legalIssues: input.output.legalIssues,\n    searchTerms: input.output.searchTerms,\n    practiceAreas: input.output.practiceAreas\n  },\n  reasoning: 'Identified legal issues and generated search terms for case law research'\n});\n\n// Store intermediate results\nworkingMemory.intermediateResults.issueSpotting = {\n  legalIssues: input.output.legalIssues,\n  searchTerms: input.output.searchTerms,\n  practiceAreas: input.output.practiceAreas,\n  completedAt: new Date().toISOString()\n};\n\nreturn {\n  json: {\n    ...input,\n    workingMemory: workingMemory\n  }\n};"
+      },
+      "id": "561bab82-f016-4857-bbbc-2c54fac91123",
+      "name": "Update Memory - Issue Spotting",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1904,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Update working memory after case analysis\nconst currentData = $input.item.json;\n\n// Initialize or retrieve working memory\nconst workingMemory = currentData.workingMemory || {\n  sessionId: currentData.sessionId,\n  originalQuery: currentData.originalQuery,\n  stages: {},\n  decisionTrail: [],\n  accumulatedFindings: {\n    legalIssues: [],\n    searchTerms: [],\n    caseFindings: [],\n    keyPrecedents: []\n  }\n};\n\n// Accumulate case findings\nif (currentData.caseAnalysis) {\n  workingMemory.accumulatedFindings.caseFindings.push({\n    query: currentData.currentQuery?.query,\n    relevantCases: currentData.caseAnalysis.relevantCases || [],\n    keyFindings: currentData.caseAnalysis.keyFindings || [],\n    applicability: currentData.caseAnalysis.applicability,\n    timestamp: new Date().toISOString()\n  });\n  \n  // Extract key precedents\n  if (currentData.caseAnalysis.relevantCases) {\n    currentData.caseAnalysis.relevantCases.forEach(caseItem => {\n      if (caseItem.citation) {\n        workingMemory.accumulatedFindings.keyPrecedents.push(caseItem.citation);\n      }\n    });\n  }\n}\n\n// Store stage data\nworkingMemory.stages.caseAnalysis = {\n  completedAt: new Date().toISOString(),\n  totalCasesAnalyzed: workingMemory.accumulatedFindings.caseFindings.length,\n  totalPrecedents: workingMemory.accumulatedFindings.keyPrecedents.length\n};\n\n// Add decision trail entry\nworkingMemory.decisionTrail.push({\n  stage: 'case_analysis',\n  timestamp: new Date().toISOString(),\n  action: 'Analyzed case law search results',\n  details: {\n    casesFound: currentData.caseAnalysis?.relevantCases?.length || 0,\n    keyFindings: currentData.caseAnalysis?.keyFindings?.length || 0,\n    applicability: currentData.caseAnalysis?.applicability\n  }\n});\n\nreturn {\n  json: {\n    ...currentData,\n    workingMemory: workingMemory\n  }\n};"
+      },
+      "id": "91ef5d3b-0926-478a-b608-8836d5366bd0",
+      "name": "Update Memory - Case Analysis",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -880,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Update working memory after synthesis\nconst synthesis = $input.item.json.synthesis;\nconst sessionId = $input.item.json.sessionId;\n\n// Get existing memory or initialize\nconst memory = $input.item.json.workingMemory || {\n  sessionId: sessionId,\n  findings: [],\n  precedents: [],\n  decisionTrail: []\n};\n\n// Add precedents from synthesis\nif (synthesis && synthesis.precedents) {\n  memory.precedents = memory.precedents.concat(synthesis.precedents);\n}\n\n// Add decision trail entry\nmemory.decisionTrail.push({\n  stage: 'synthesis',\n  timestamp: new Date().toISOString(),\n  action: 'Legal synthesis completed',\n  data: {\n    executiveSummary: synthesis?.executiveSummary,\n    precedentsCount: synthesis?.precedents?.length || 0,\n    recommendationsCount: synthesis?.recommendations?.length || 0\n  }\n});\n\nreturn {\n  json: {\n    ...($input.item.json),\n    workingMemory: memory\n  }\n};"
+      },
+      "id": "d407c3dd-dfb3-4516-ae35-213e5d7f2447",
+      "name": "Update Memory - Synthesis",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -432,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Update working memory with synthesis results and prepare for QA\nconst input = $input.item.json;\n\nconst synthesis = input.output?.synthesis || {};\n\nconst workingMemory = {\n  ...(input.workingMemory || {}),\n  stages: {\n    ...(input.workingMemory?.stages || {}),\n    qualityAssurance: {\n      completedAt: new Date().toISOString()\n    }\n  },\n  decisionTrail: [\n    ...(input.workingMemory?.decisionTrail || []),\n    {\n      stage: 'quality_assurance',\n      timestamp: new Date().toISOString(),\n      action: 'quality_assessment_completed',\n      details: {\n        qualityScore: 0,\n        confidenceRating: 'unknown',\n        expertReviewNeeded: false,\n        gapsIdentified: 0,\n        strengthsIdentified: 0\n      }\n    }\n  ],\n  qualityMetrics: {\n    qualityScore: 0,\n    confidenceRating: 'unknown',\n    expertReviewNeeded: false,\n    gaps: [],\n    strengths: [],\n    assessedAt: new Date().toISOString()\n  }\n};\n\nreturn {\n  json: {\n    ...input,\n    workingMemory: workingMemory,\n    synthesisText: JSON.stringify(synthesis, null, 2),\n    expertReviewNeededString: String(input.output?.qualityReport?.expertReviewNeeded || false)\n  }\n};"
+      },
+      "id": "722a2647-17b1-4ed7-8e44-649a3ca7849f",
+      "name": "Update Memory - QA",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        144,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Mock Case Law Database Search - Run Once for All Items mode\n// Returns realistic-looking legal case data for testing\n\nconst allItems = $input.all();\n\nreturn allItems.map(item => {\n  const query = item.json.currentQuery?.query || '';\n  const jurisdiction = item.json.currentQuery?.jurisdiction || 'California';\n  const sessionId = item.json.workingMemory?.queryContext?.sessionId || '';\n\n  // Generate mock case law results based on the search query\n  const mockCases = [\n    {\n      citation: \"Edwards v. Arthur Andersen LLP, 44 Cal.4th 937 (2008)\",\n      title: \"Edwards v. Arthur Andersen LLP\",\n      court: \"California Supreme Court\",\n      year: 2008,\n      jurisdiction: jurisdiction,\n      relevance: 0.95,\n      summary: \"California Supreme Court held that non-compete agreements are generally unenforceable under California Business and Professions Code Section 16600, except in limited circumstances involving sale of business or dissolution of partnership.\",\n      keyHoldings: [\n        \"Section 16600 voids all contracts that restrain a person from engaging in a lawful profession, trade, or business\",\n        \"Narrow restraints necessary to protect trade secrets may be enforceable\",\n        \"The statute represents a strong public policy favoring open competition and employee mobility\"\n      ],\n      url: \"https://caselaw.findlaw.com/ca-supreme-court/1439562.html\"\n    },\n    {\n      citation: \"AMN Healthcare, Inc. v. Aya Healthcare Services, Inc., 28 Cal.App.5th 923 (2018)\",\n      title: \"AMN Healthcare, Inc. v. Aya Healthcare Services, Inc.\",\n      court: \"California Court of Appeal\",\n      year: 2018,\n      jurisdiction: jurisdiction,\n      relevance: 0.88,\n      summary: \"Court held that even customer non-solicitation clauses are subject to Business and Professions Code Section 16600's prohibition on restraints of trade, unless they fall within narrow statutory exceptions.\",\n      keyHoldings: [\n        \"Customer non-solicitation agreements are generally void under Section 16600\",\n        \"The policy behind Section 16600 is to ensure that every citizen shall retain the right to pursue any lawful employment\",\n        \"Restraints are only valid in connection with sale of goodwill or dissolution of partnership\"\n      ],\n      url: \"https://law.justia.com/cases/california/court-of-appeal/2018/g054698.html\"\n    },\n    {\n      citation: \"Retirement Group v. Galante, 176 Cal.App.4th 1226 (2009)\",\n      title: \"Retirement Group v. Galante\",\n      court: \"California Court of Appeal\",\n      year: 2009,\n      jurisdiction: jurisdiction,\n      relevance: 0.82,\n      summary: \"Court examined the temporal and geographic scope of non-compete restrictions and held that even narrow restrictions on practice within a specific geographic area for a limited time are generally void in California.\",\n      keyHoldings: [\n        \"Two-year restriction on competing within 50-mile radius held void\",\n        \"California policy strongly favors employee mobility\",\n        \"Time and geographic limitations do not save an otherwise void restraint\"\n      ],\n      url: \"https://casetext.com/case/retirement-group-v-galante\"\n    },\n    {\n      citation: \"Kolani v. Gluska, 64 Cal.App.4th 402 (1998)\",\n      title: \"Kolani v. Gluska\",\n      court: \"California Court of Appeal\",\n      year: 1998,\n      jurisdiction: jurisdiction,\n      relevance: 0.79,\n      summary: \"Court addressed enforceability of restrictive covenants in professional services context and reaffirmed that Business and Professions Code Section 16600 applies broadly to all professions and trades.\",\n      keyHoldings: [\n        \"Section 16600 applies to all types of employment relationships\",\n        \"The statute makes no distinction based on the nature of the employment\",\n        \"Restraints are void regardless of whether they are reasonable\"\n      ],\n      url: \"https://casetext.com/case/kolani-v-gluska\"\n    },\n    {\n      citation: \"Dowell v. Biosense Webster, Inc., 179 Cal.App.4th 564 (2009)\",\n      title: \"Dowell v. Biosense Webster, Inc.\",\n      court: \"California Court of Appeal\",\n      year: 2009,\n      jurisdiction: jurisdiction,\n      relevance: 0.75,\n      summary: \"Court held that covenant not to compete contained in severance agreement was void under Section 16600, even though employee received substantial consideration.\",\n      keyHoldings: [\n        \"Consideration for non-compete does not make it enforceable\",\n        \"Section 16600 is not subject to a 'rule of reason' analysis\",\n        \"Public policy against restraints of trade cannot be waived by contract\"\n      ],\n      url: \"https://casetext.com/case/dowell-v-biosense-webster-inc\"\n    }\n  ];\n\n  // Return mock results with search metadata AND preserve sessionId\n  return {\n    json: {\n      ...(item.json),\n      sessionId: sessionId,  // ADD THIS LINE - preserves sessionId for Session Memory\n      searchQuery: query,\n      searchJurisdiction: jurisdiction,\n      resultsCount: mockCases.length,\n      searchTimestamp: new Date().toISOString(),\n      body: {\n        success: true,\n        query: query,\n        jurisdiction: jurisdiction,\n        total_results: mockCases.length,\n        results: mockCases\n      }\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1792,
+        16
+      ],
+      "id": "b8f889f0-bd74-4cb0-8c94-553263708d7a",
+      "name": "Mock Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare Database Insert - Formats all data for PostgreSQL insertion\n\nconst issueSpotterOutput = $('Issue Spotter Agent').item.json.output;\nconst caseAnalysisOutput = $('Case Analysis Agent').item.json.output;\nconst synthesisOutput = $('Legal Synthesis Agent').item.json.output;\nconst qaOutput = $('Quality Assurance Agent').item.json.output;\nconst memorandumOutput = $('Draft Legal Memorandum').item.json.output;\nconst parseQuery = $('Parse Legal Query').item.json;\n\nreturn {\n  json: {\n    // Session identifiers\n    session_id: parseQuery.sessionId,\n    user_id: parseQuery.userId,\n    \n    // Original query info\n    original_query: parseQuery.originalQuery,\n    jurisdiction: parseQuery.jurisdiction,\n    practice_area: parseQuery.practiceArea,\n    \n    // Issue Spotter results - JSONB fields as JSON strings\n    legal_issues: JSON.stringify(issueSpotterOutput?.legalIssues || []),\n    search_terms: JSON.stringify(issueSpotterOutput?.searchTerms || []),\n    practice_areas: JSON.stringify(issueSpotterOutput?.practiceAreas || []),\n    \n    // Case Analysis results - JSONB fields as JSON strings\n    case_analyses: JSON.stringify(caseAnalysisOutput?.caseAnalysis ? [caseAnalysisOutput.caseAnalysis] : []),\n    relevant_cases: JSON.stringify(caseAnalysisOutput?.caseAnalysis?.relevantCases || []),\n    key_findings: JSON.stringify(caseAnalysisOutput?.caseAnalysis?.keyFindings || []),\n    \n    // Synthesis results\n    executive_summary: synthesisOutput?.synthesis?.executiveSummary || '',\n    legal_analysis: synthesisOutput?.synthesis?.legalAnalysis || '',\n    precedents: JSON.stringify(synthesisOutput?.synthesis?.precedents || []),\n    recommendations: JSON.stringify(synthesisOutput?.synthesis?.recommendations || []),\n    \n    // Quality Assurance results\n    quality_score: qaOutput?.qualityReport?.qualityScore || 0,\n    confidence_rating: qaOutput?.qualityReport?.confidenceRating || 'unknown',\n    expert_review_needed: qaOutput?.qualityReport?.expertReviewNeeded || false,\n    quality_gaps: JSON.stringify(qaOutput?.qualityReport?.gaps || []),\n    quality_strengths: JSON.stringify(qaOutput?.qualityReport?.strengths || []),\n    \n    // Final memorandum\n    memorandum: memorandumOutput || ''\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1296,
+        272
+      ],
+      "id": "759d72ee-973c-428e-a710-055a44df8edb",
+      "name": "Prepare Database Insert"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare Audit Log - Create an audit trail entry for this research session\nconst input = $input.item.json;\n\n// Get basic session info\nconst parseQuery = $('Parse Legal Query').first().json;\nconst qualityReport = $('Quality Assurance Agent').first().json.output.qualityReport;\n\n// Determine the workflow path taken\nlet workflowPath = 'unknown';\nlet finalAction = 'unknown';\n\ntry {\n  // Check which path was taken based on expert_review_needed\n  if (qualityReport.expertReviewNeeded === true) {\n    workflowPath = 'expert_review';\n    finalAction = 'flagged_for_review';\n  } else {\n    workflowPath = 'draft_memorandum';\n    finalAction = 'memorandum_generated';\n  }\n} catch (e) {\n  workflowPath = 'error';\n  finalAction = 'workflow_error';\n}\n\n// Calculate total execution time\nconst startTime = new Date(parseQuery.timestamp);\nconst endTime = new Date();\nconst executionTimeSeconds = Math.round((endTime - startTime) / 1000);\n\n// Prepare audit log entry\nconst auditEntry = {\n  // Session identification\n  session_id: parseQuery.sessionId || '',\n  user_id: parseQuery.userId || '',\n  \n  // Workflow metadata\n  workflow_path: workflowPath,\n  final_action: finalAction,\n  \n  // Timing information\n  started_at: parseQuery.timestamp,\n  completed_at: endTime.toISOString(),\n  execution_time_seconds: executionTimeSeconds,\n  \n  // Quality metrics\n  quality_score: qualityReport.qualityScore || 0,\n  confidence_rating: qualityReport.confidenceRating || 'unknown',\n  expert_review_needed: qualityReport.expertReviewNeeded || false,\n  \n  // Research summary\n  original_query: parseQuery.originalQuery || '',\n  jurisdiction: parseQuery.jurisdiction || '',\n  practice_area: parseQuery.practiceArea || '',\n  \n  // Case analysis metrics\n  cases_analyzed: 5, // From mock data - you could make this dynamic\n  issues_identified: 0,\n  recommendations_generated: 0,\n  \n  // Workflow success indicator\n  status: 'completed',\n  \n  // Additional metadata (as JSON)\n  metadata: JSON.stringify({\n    gaps_count: (qualityReport.gaps || []).length,\n    strengths_count: (qualityReport.strengths || []).length,\n    workflow_version: '1.0'\n  })\n};\n\n// Try to get counts dynamically if available\ntry {\n  const issueSpotter = $('Issue Spotter Agent').first().json.output;\n  auditEntry.issues_identified = (issueSpotter.legalIssues || []).length;\n  \n  const synthesis = $('Legal Synthesis Agent').first().json.output.synthesis;\n  auditEntry.recommendations_generated = (synthesis.recommendations || []).length;\n} catch (e) {\n  // Use defaults if data not available\n}\n\nreturn {\n  json: auditEntry\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1968,
+        272
+      ],
+      "id": "1f82cc05-f2a1-4eb2-8260-5d9ddc8e4698",
+      "name": "Prepare Audit Log"
+    },
+    {
+      "parameters": {
+        "content": "**CoCounsel Legal Research Agent**\n\nMulti-agent legal research system that processes queries through five specialized AI agents:\n\n1. **Issue Spotter** - Identifies legal issues and generates search terms\n2. **Case Analysis** - Analyzes case law and extracts key holdings\n3. **Legal Synthesis** - Produces executive summary, analysis, and recommendations\n4. **Quality Assurance** - Scores research quality and flags gaps\n5. **Memorandum Drafter** - Generates formal legal memorandum\n\n**Features:**\n- Quality-based routing (≥80 auto-drafts, <80 flags for expert review)\n- Session memory tracking through decision trail\n- PostgreSQL persistence (research_results, review_queue, audit_log)\n- Structured JSON output with JSONB storage\n\n**Webhook Input:**\n```json\n{\n  \"query\": \"Legal question\",\n  \"userId\": \"user_id\",\n  \"jurisdiction\": \"State/Region\",\n  \"practiceArea\": \"Practice Area\"\n}\n```\n\n**External Dependencies:**\n- Anthropic API (Claude Sonnet 4)\n- PostgreSQL/Supabase\n\nPRODUCT DOCUMENTATION HERE: \nGENERAL:  https://docs.google.com/document/d/1ExHP40cj_XtYNCY9XDsnN_7wFnCRFDyVhSoxFYUYi7o/edit?usp=sharing\nDATABASE: https://docs.google.com/document/d/1QGYmdIS2DNRcEmjHfuDWIotktnLkI_ZkDHLJnHj4KBw/edit?usp=sharing",
+        "height": 896,
+        "width": 1008
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -3968,
+        -144
+      ],
+      "typeVersion": 1,
+      "id": "66b38faf-1978-4246-9ac0-22f3ba8a7324",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4.1-mini"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        -1056,
+        816
+      ],
+      "id": "c369951d-f4c6-46cc-9013-76692cca0cea",
+      "name": "OpenAI Chat Model",
+      "credentials": {
+        "openAiApi": {
+          "id": "x6T6BlWTbq0xsdSm",
+          "name": "OpenAi account"
+        }
+      }
+    }
+  ],
+  "pinData": {
+    "Webhook - Legal Query": [
+      {
+        "json": {
+          "headers": {},
+          "query": {},
+          "body": {
+            "query": "Can an employer require employees to sign a non-compete agreement that prevents them from working in the same industry for 2 years after leaving the company?",
+            "userId": "test_user_001",
+            "jurisdiction": "California",
+            "practiceArea": "Employment Law"
+          }
+        },
+        "pairedItem": {
+          "item": 0
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Webhook - Legal Query": {
+      "main": [
+        [
+          {
+            "node": "Parse Legal Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Search Queries": {
+      "main": [
+        [
+          {
+            "node": "Case Law Database Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Expert Review?": {
+      "main": [
+        [
+          {
+            "node": "Flag for Expert Review",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Draft Legal Memorandum",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flag for Expert Review": {
+      "main": [
+        [
+          {
+            "node": "Prepare Database Insert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Review Queue": {
+      "main": [
+        [
+          {
+            "node": "Merge Completion Paths",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Research Results": {
+      "main": [
+        [
+          {
+            "node": "Merge Completion Paths",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Completion Paths": {
+      "main": [
+        [
+          {
+            "node": "Prepare Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Final Response": {
+      "main": [
+        [
+          {
+            "node": "Send Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Model - Issue Spotter": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Issue Spotter Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Issue Spotter Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Issue Spotter Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Case Law Database Search": {
+      "main": [
+        [
+          {
+            "node": "Case Analysis Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Model - Case Analysis": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Case Analysis Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Case Analysis Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Case Analysis Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Case Analysis Agent": {
+      "main": [
+        [
+          {
+            "node": "Update Memory - Case Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Model - Synthesis": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Legal Synthesis Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Synthesis Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Legal Synthesis Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Model - QA": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Quality Assurance Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "QA Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Quality Assurance Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Quality Assurance Agent": {
+      "main": [
+        [
+          {
+            "node": "Needs Expert Review?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Model - Memorandum": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Draft Legal Memorandum",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft Legal Memorandum": {
+      "main": [
+        [
+          {
+            "node": "Prepare Database Insert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Session Memory": {
+      "ai_memory": [
+        []
+      ]
+    },
+    "Parse Legal Query": {
+      "main": [
+        [
+          {
+            "node": "Initialize Working Memory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Initialize Working Memory": {
+      "main": [
+        [
+          {
+            "node": "Issue Spotter Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Issue Spotter Agent": {
+      "main": [
+        [
+          {
+            "node": "Update Memory - Issue Spotting",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Memory - Issue Spotting": {
+      "main": [
+        [
+          {
+            "node": "Split Search Queries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Memory - Case Analysis": {
+      "main": [
+        [
+          {
+            "node": "Merge All Analyses",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge All Analyses": {
+      "main": [
+        [
+          {
+            "node": "Update Memory - Synthesis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Memory - Synthesis": {
+      "main": [
+        [
+          {
+            "node": "Legal Synthesis Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Legal Synthesis Agent": {
+      "main": [
+        [
+          {
+            "node": "Update Memory - QA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Memory - QA": {
+      "main": [
+        [
+          {
+            "node": "Quality Assurance Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mock Code in JavaScript": {
+      "main": [
+        []
+      ]
+    },
+    "Audit Log": {
+      "main": [
+        [
+          {
+            "node": "Format Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Database Insert": {
+      "main": [
+        [
+          {
+            "node": "Save Research Results",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Save to Review Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Audit Log": {
+      "main": [
+        [
+          {
+            "node": "Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        []
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": true
+  },
+  "versionId": "fc3b2dcf-7829-4956-a05f-4ac62025e828",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "b01e799c8597a418342586f9fe42b57cf7798483b7d7540aea0ab43464ea70a2"
+  },
+  "id": "JKGAILw1euktMpyX",
+  "tags": []
+}

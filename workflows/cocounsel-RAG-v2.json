@@ -1,0 +1,870 @@
+{
+  "name": "CoCounsel RAG - Supabase Cloud Native",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "cocounsel-rag",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-entry",
+      "name": "Webhook - Research Query",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "cocounsel-rag-webhook"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Initialize session and parse input\nconst body = $input.item.json.body || $input.item.json;\n\nconst sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;\n\nreturn {\n  json: {\n    sessionId: sessionId,\n    originalQuery: body.query,\n    jurisdiction: body.jurisdiction || 'federal',\n    practiceArea: body.practiceArea || 'general',\n    userId: body.userId || 'anonymous',\n    outputFormat: body.outputFormat || 'memo',\n    isFollowUp: body.isFollowUp || false,\n    timestamp: new Date().toISOString(),\n    ragEnabled: true\n  }\n};"
+      },
+      "id": "init-session",
+      "name": "Initialize Session",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "issue-spotter-prompt",
+              "name": "issueSpotterPrompt",
+              "value": "=You are a legal issue spotter analyzing a research query.\n\nQUERY: {{ $json.originalQuery }}\nJURISDICTION: {{ $json.jurisdiction }}\nPRACTICE AREA: {{ $json.practiceArea }}\n\nAnalyze this query and identify:\n1. Legal issues (be specific)\n2. Search terms for case law research\n3. Complexity level\n4. Recommended search strategy\n\nReturn as JSON:\n{\n  \"legalIssues\": [\"issue1\", \"issue2\"],\n  \"searchTerms\": [\"term1\", \"term2\", \"term3\", \"term4\"],\n  \"complexity\": \"low|medium|high\",\n  \"searchStrategy\": \"description\",\n  \"keyLegalConcepts\": [\"concept1\", \"concept2\"]\n}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "build-issue-prompt",
+      "name": "Build Issue Spotter Prompt",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "model": "claude-sonnet-4-20250514",
+        "options": {
+          "temperature": 0.3,
+          "maxTokens": 2000
+        },
+        "text": "={{ $json.issueSpotterPrompt }}"
+      },
+      "id": "issue-spotter",
+      "name": "Issue Spotter Agent",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1,
+      "position": [900, 300],
+      "credentials": {
+        "anthropicApi": {
+          "id": "anthropic-credential",
+          "name": "Anthropic Claude"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Parse Claude's JSON response\nconst response = $input.item.json;\nlet analysis;\n\ntry {\n  // Try to parse if it's a string\n  if (typeof response === 'string') {\n    analysis = JSON.parse(response.replace(/```json\\n?|```/g, '').trim());\n  } else {\n    analysis = response;\n  }\n} catch (e) {\n  // Fallback if parsing fails\n  analysis = {\n    legalIssues: ['Needs manual review'],\n    searchTerms: [$input.first().json.originalQuery],\n    complexity: 'medium'\n  };\n}\n\nreturn {\n  json: {\n    ...$input.first().json,\n    analysis: analysis,\n    legalIssues: analysis.legalIssues,\n    searchTerms: analysis.searchTerms\n  }\n};"
+      },
+      "id": "parse-analysis",
+      "name": "Parse Analysis",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/embeddings",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"input\": $json.originalQuery,\n  \"model\": \"text-embedding-3-small\",\n  \"encoding_format\": \"float\"\n} }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "generate-embedding",
+      "name": "Generate Query Embedding",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1340, 300],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credential",
+          "name": "OpenAI Embeddings"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Extract embedding from OpenAI response\nconst response = $input.item.json;\nconst embedding = response.data[0].embedding;\nconst embeddingGenTime = Date.now();\n\nreturn {\n  json: {\n    ...$input.item.json,\n    queryEmbedding: embedding,\n    embeddingDimensions: embedding.length,\n    embeddingModel: 'text-embedding-3-small',\n    embeddingGeneratedAt: new Date().toISOString(),\n    embeddingGenTimeMs: embeddingGenTime\n  }\n};"
+      },
+      "id": "extract-embedding",
+      "name": "Extract Embedding",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.supabaseUrl }}/rest/v1/rpc/vector_search_cases",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"query_embedding\": $json.queryEmbedding,\n  \"match_threshold\": 0.7,\n  \"match_count\": 10,\n  \"filter_jurisdiction\": $json.jurisdiction\n} }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "vector-search",
+      "name": "Vector Search RPC - Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1780, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credential",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Format retrieved cases for RAG context\nconst response = $input.item.json;\nconst vectorResults = Array.isArray(response) ? response : [];\nconst searchStartTime = $input.first().json.embeddingGenTimeMs;\nconst searchEndTime = Date.now();\n\nif (vectorResults.length === 0) {\n  return {\n    json: {\n      ...$input.first().json,\n      retrievedCases: [],\n      ragContext: 'No relevant cases found in knowledge base.',\n      casesRetrieved: 0,\n      searchDurationMs: searchEndTime - searchStartTime,\n      noResults: true\n    }\n  };\n}\n\nconst formattedContext = vectorResults.map((c, idx) => {\n  return `\n═══════════════════════════════════════\n[CASE ${idx + 1}]\nCitation: ${c.citation}\nJurisdiction: ${c.jurisdiction}\nSimilarity Score: ${(c.similarity * 100).toFixed(1)}%\n\nHolding:\n${c.holding}\n\nKey Facts:\n${c.key_facts || 'N/A'}\n═══════════════════════════════════════`;\n}).join('\\n\\n');\n\nconst avgSimilarity = vectorResults.reduce((sum, v) => sum + v.similarity, 0) / vectorResults.length;\n\nreturn {\n  json: {\n    ...$input.first().json,\n    retrievedCases: vectorResults,\n    ragContext: formattedContext,\n    casesRetrieved: vectorResults.length,\n    topSimilarity: vectorResults[0].similarity,\n    avgSimilarity: avgSimilarity,\n    searchDurationMs: searchEndTime - searchStartTime\n  }\n};"
+      },
+      "id": "format-context",
+      "name": "Format RAG Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "case-analysis-prompt",
+              "name": "caseAnalysisPrompt",
+              "value": "=You are a legal case analyst evaluating retrieved case law.\n\n🔍 RESEARCH QUERY:\n{{ $json.originalQuery }}\n\n📍 PARAMETERS:\nJurisdiction: {{ $json.jurisdiction }}\nPractice Area: {{ $json.practiceArea }}\nIdentified Issues: {{ JSON.stringify($json.legalIssues) }}\n\n📚 RETRIEVED CASES (from RAG vector search):\n{{ $json.ragContext }}\n\n🎯 YOUR TASK:\nAnalyze each retrieved case for its relevance and applicability to the research query.\n\nFor each case, provide:\n1. Relevance score (0-100)\n2. How it applies to the identified legal issues\n3. Key holdings that are applicable\n4. Any distinguishing factors\n5. Whether it supports or contradicts other cases\n\nIMPORTANT GUIDELINES:\n- Use ONLY the cases provided above (RAG-retrieved)\n- Consider the similarity scores - higher scores indicate better semantic match\n- Note which cases are binding vs. persuasive authority\n- Be precise about holdings and their applicability\n\nReturn as JSON:\n{\n  \"caseAnalyses\": [\n    {\n      \"caseNumber\": 1,\n      \"citation\": \"...\",\n      \"relevanceScore\": 95,\n      \"applicableHoldings\": \"...\",\n      \"keyPoints\": [\"point1\", \"point2\"],\n      \"distinguishingFactors\": \"...\",\n      \"authorityLevel\": \"binding|persuasive\"\n    }\n  ],\n  \"topPrecedents\": [\"citation1\", \"citation2\"],\n  \"caseLawSummary\": \"Brief overview of what the cases collectively establish\",\n  \"confidence\": 0.9\n}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "build-analysis-prompt",
+      "name": "Build Analysis Prompt",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [2220, 300]
+    },
+    {
+      "parameters": {
+        "model": "claude-sonnet-4-20250514",
+        "options": {
+          "temperature": 0.2,
+          "maxTokens": 4000
+        },
+        "text": "={{ $json.caseAnalysisPrompt }}"
+      },
+      "id": "case-analysis",
+      "name": "Case Analysis Agent",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1,
+      "position": [2440, 300],
+      "credentials": {
+        "anthropicApi": {
+          "id": "anthropic-credential",
+          "name": "Anthropic Claude"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Parse case analysis response\nconst response = $input.item.json;\nlet caseAnalysis;\n\ntry {\n  if (typeof response === 'string') {\n    caseAnalysis = JSON.parse(response.replace(/```json\\n?|```/g, '').trim());\n  } else {\n    caseAnalysis = response;\n  }\n} catch (e) {\n  console.error('Failed to parse case analysis:', e);\n  caseAnalysis = {\n    caseAnalyses: [],\n    topPrecedents: [],\n    caseLawSummary: 'Analysis parsing failed',\n    confidence: 0.5\n  };\n}\n\nreturn {\n  json: {\n    ...$input.first().json,\n    caseAnalysis: caseAnalysis\n  }\n};"
+      },
+      "id": "parse-case-analysis",
+      "name": "Parse Case Analysis",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2660, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "synthesis-prompt",
+              "name": "synthesisPrompt",
+              "value": "=You are synthesizing legal research into a comprehensive analysis.\n\n📋 RESEARCH QUERY:\n{{ $json.originalQuery }}\n\n🎯 LEGAL ISSUES IDENTIFIED:\n{{ JSON.stringify($json.legalIssues) }}\n\n📚 RETRIEVED CASES (RAG):\n{{ $json.ragContext }}\n\n📊 CASE ANALYSIS:\n{{ JSON.stringify($json.caseAnalysis, null, 2) }}\n\n📈 RAG METRICS:\n- Cases Retrieved: {{ $json.casesRetrieved }}\n- Average Similarity: {{ ($json.avgSimilarity * 100).toFixed(1) }}%\n- Top Similarity: {{ ($json.topSimilarity * 100).toFixed(1) }}%\n\n✍️ YOUR TASK:\nCreate a comprehensive legal analysis that synthesizes all retrieved case law.\n\nInclude:\n1. EXECUTIVE SUMMARY (2-3 paragraphs)\n2. LEGAL ANALYSIS BY ISSUE\n   - Address each identified legal issue\n   - Cite cases by number [1], [2], etc.\n   - Explain how holdings apply\n3. KEY PRECEDENTS\n   - Most important cases\n   - Why they matter\n   - Binding vs. persuasive\n4. STRENGTH ASSESSMENT\n   - Overall strength of legal position\n   - Confidence level based on similarity scores\n5. JURISDICTIONAL CONSIDERATIONS\n   - Specific to {{ $json.jurisdiction }}\n\nCRITICAL REQUIREMENTS:\n✓ Cite ALL cases by number [1], [2], etc.\n✓ Use ONLY cases provided above (no external cases)\n✓ Note similarity scores to indicate confidence\n✓ Be explicit about jurisdiction and court level\n✓ Distinguish binding from persuasive authority\n✓ Ground all statements in the retrieved case law\n\nReturn as JSON with this structure:\n{\n  \"executiveSummary\": \"...\",\n  \"legalAnalysis\": {\n    \"issue1\": {\n      \"analysis\": \"...\",\n      \"supportingCases\": [1, 2],\n      \"keyHoldings\": [\"...\"]\n    }\n  },\n  \"keyPrecedents\": [\n    {\n      \"caseNumber\": 1,\n      \"citation\": \"...\",\n      \"significance\": \"...\",\n      \"similarityScore\": 0.89\n    }\n  ],\n  \"strengthAssessment\": {\n    \"overallStrength\": \"strong|moderate|weak\",\n    \"confidence\": 0.85,\n    \"reasoning\": \"...\"\n  },\n  \"jurisdictionalNotes\": \"...\"\n}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "build-synthesis-prompt",
+      "name": "Build Synthesis Prompt",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [2880, 300]
+    },
+    {
+      "parameters": {
+        "model": "claude-sonnet-4-20250514",
+        "options": {
+          "temperature": 0.3,
+          "maxTokens": 8000
+        },
+        "text": "={{ $json.synthesisPrompt }}"
+      },
+      "id": "synthesis",
+      "name": "Synthesis Agent",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1,
+      "position": [3100, 300],
+      "credentials": {
+        "anthropicApi": {
+          "id": "anthropic-credential",
+          "name": "Anthropic Claude"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Parse synthesis response\nconst response = $input.item.json;\nlet synthesis;\n\ntry {\n  if (typeof response === 'string') {\n    synthesis = JSON.parse(response.replace(/```json\\n?|```/g, '').trim());\n  } else {\n    synthesis = response;\n  }\n} catch (e) {\n  console.error('Failed to parse synthesis:', e);\n  synthesis = {\n    executiveSummary: 'Synthesis parsing failed',\n    legalAnalysis: {},\n    keyPrecedents: [],\n    strengthAssessment: { overallStrength: 'unknown', confidence: 0.5 }\n  };\n}\n\nreturn {\n  json: {\n    ...$input.first().json,\n    synthesis: synthesis\n  }\n};"
+      },
+      "id": "parse-synthesis",
+      "name": "Parse Synthesis",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3320, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "quality-prompt",
+              "name": "qualityPrompt",
+              "value": "=You are evaluating the quality of RAG-enhanced legal research.\n\n📊 SYNTHESIS TO EVALUATE:\n{{ JSON.stringify($json.synthesis, null, 2) }}\n\n📚 RAG METRICS:\n- Cases Retrieved: {{ $json.casesRetrieved }}\n- Average Similarity: {{ ($json.avgSimilarity * 100).toFixed(1) }}%\n- Top Similarity: {{ ($json.topSimilarity * 100).toFixed(1) }}%\n\n🔍 RETRIEVED CASES:\n{{ $json.retrievedCases.map(c => c.citation).join(', ') }}\n\n✅ QUALITY CHECKS:\n1. Citation Accuracy\n   - Are all citations from retrieved cases only?\n   - No hallucinated or external cases?\n   \n2. RAG Grounding\n   - Is analysis based on retrieved context?\n   - Are similarity scores considered?\n   \n3. Completeness\n   - Are all legal issues addressed?\n   - Is analysis comprehensive?\n   \n4. Jurisdictional Accuracy\n   - Correct jurisdiction noted ({{ $json.jurisdiction }})?\n   - Authority levels accurate?\n   \n5. Holdings Accuracy\n   - Are case holdings accurately described?\n   - Proper application to query?\n\nScore each dimension 0-100 and provide overall score.\n\nReturn as JSON:\n{\n  \"qualityScore\": 88,\n  \"citationAccuracy\": 95,\n  \"ragGrounding\": 100,\n  \"completeness\": 85,\n  \"jurisdictionalAccuracy\": 90,\n  \"holdingsAccuracy\": 85,\n  \"issues\": [\"issue if any\"],\n  \"strengths\": [\"strength1\", \"strength2\"],\n  \"passesThreshold\": true,\n  \"needsExpertReview\": false,\n  \"recommendations\": [\"recommendation if any\"]\n}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "build-quality-prompt",
+      "name": "Build Quality Prompt",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [3540, 300]
+    },
+    {
+      "parameters": {
+        "model": "claude-haiku-4-20250122",
+        "options": {
+          "temperature": 0.1,
+          "maxTokens": 2000
+        },
+        "text": "={{ $json.qualityPrompt }}"
+      },
+      "id": "quality-control",
+      "name": "Quality Control Agent",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1,
+      "position": [3760, 300],
+      "credentials": {
+        "anthropicApi": {
+          "id": "anthropic-credential",
+          "name": "Anthropic Claude"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Parse quality report\nconst response = $input.item.json;\nlet qualityReport;\n\ntry {\n  if (typeof response === 'string') {\n    qualityReport = JSON.parse(response.replace(/```json\\n?|```/g, '').trim());\n  } else {\n    qualityReport = response;\n  }\n} catch (e) {\n  console.error('Failed to parse quality report:', e);\n  qualityReport = {\n    qualityScore: 50,\n    passesThreshold: false,\n    issues: ['Quality parsing failed']\n  };\n}\n\nreturn {\n  json: {\n    ...$input.first().json,\n    qualityReport: qualityReport\n  }\n};"
+      },
+      "id": "parse-quality",
+      "name": "Parse Quality Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3980, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "quality-threshold-check",
+              "leftValue": "={{ $json.qualityReport.qualityScore }}",
+              "rightValue": 75,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "quality-gate",
+      "name": "Quality Gate",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [4200, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "memo-prompt",
+              "name": "memorandumPrompt",
+              "value": "=You are drafting a formal legal research memorandum.\n\n📋 RESEARCH QUERY:\n{{ $json.originalQuery }}\n\n📊 SYNTHESIS (RAG-Enhanced):\n{{ JSON.stringify($json.synthesis, null, 2) }}\n\n📚 SOURCES (Retrieved via Vector Search):\n{{ $json.ragContext }}\n\n📈 QUALITY METRICS:\n- Quality Score: {{ $json.qualityReport.qualityScore }}\n- RAG Grounding: {{ $json.qualityReport.ragGrounding }}%\n- Cases Retrieved: {{ $json.casesRetrieved }}\n- Average Similarity: {{ ($json.avgSimilarity * 100).toFixed(1) }}%\n\n✍️ DRAFT A FORMAL LEGAL MEMORANDUM:\n\nFormat using IRAC structure:\n\nMEMORANDUM\n\nTO: [Client/Requesting Attorney]\nFROM: AI Legal Research Assistant\nDATE: {{ new Date().toLocaleDateString() }}\nRE: {{ $json.originalQuery }}\n\n════════════════════════════════════════\n\nI. QUESTION PRESENTED\n\n[Concise statement of the legal question]\n\nII. BRIEF ANSWER\n\n[Direct answer with brief reasoning - 2-3 sentences]\n\nIII. FACTS\n\n[Relevant facts from the query]\n\nIV. DISCUSSION\n\n[Comprehensive IRAC analysis]\n\nA. [First Legal Issue]\n\n   1. Rule\n      [State the legal rule with citations [1], [2]]\n   \n   2. Analysis\n      [Apply rule to facts, citing cases]\n   \n   3. Conclusion\n      [Sub-conclusion for this issue]\n\nB. [Second Legal Issue]\n   [Same structure]\n\n[Include for each case citation:]\n- Full citation\n- Jurisdiction and court\n- Similarity score (in footnote)\n- Binding vs. persuasive authority\n\nV. CONCLUSION\n\n[Overall conclusion with key takeaways]\n\n════════════════════════════════════════\n\nRELIABILITY NOTES:\n\n• This memorandum is based on {{ $json.casesRetrieved }} cases retrieved via semantic search\n• Average relevance (similarity score): {{ ($json.avgSimilarity * 100).toFixed(1) }}%\n• All citations verified from retrieved sources\n• RAG grounding score: {{ $json.qualityReport.ragGrounding }}%\n\n════════════════════════════════════════\n\nReturn ONLY the memorandum text (not JSON).",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "build-memo-prompt",
+      "name": "Build Memorandum Prompt",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [4420, 200]
+    },
+    {
+      "parameters": {
+        "model": "claude-sonnet-4-20250514",
+        "options": {
+          "temperature": 0.4,
+          "maxTokens": 16000
+        },
+        "text": "={{ $json.memorandumPrompt }}"
+      },
+      "id": "draft-memo",
+      "name": "Draft Memorandum Agent",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1,
+      "position": [4640, 200],
+      "credentials": {
+        "anthropicApi": {
+          "id": "anthropic-credential",
+          "name": "Anthropic Claude"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Extract memorandum text\nconst response = $input.item.json;\nlet memorandum;\n\nif (typeof response === 'string') {\n  memorandum = response;\n} else if (response.memorandum) {\n  memorandum = response.memorandum;\n} else {\n  memorandum = JSON.stringify(response);\n}\n\nconst totalExecutionTime = Date.now() - new Date($input.first().json.timestamp).getTime();\n\nreturn {\n  json: {\n    ...$input.first().json,\n    memorandum: memorandum,\n    completedAt: new Date().toISOString(),\n    totalExecutionTimeMs: totalExecutionTime,\n    retryCount: 0\n  }\n};"
+      },
+      "id": "finalize-response",
+      "name": "Finalize Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4860, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.supabaseUrl }}/rest/v1/user_research_history",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"session_id\": $json.sessionId,\n  \"user_id\": $json.userId,\n  \"query\": $json.originalQuery,\n  \"jurisdiction\": $json.jurisdiction,\n  \"practice_area\": $json.practiceArea,\n  \"query_embedding\": JSON.stringify($json.queryEmbedding),\n  \"retrieved_case_ids\": JSON.stringify($json.retrievedCases.map(c => c.case_id)),\n  \"issues_identified\": JSON.stringify($json.legalIssues),\n  \"memorandum\": $json.memorandum,\n  \"quality_score\": $json.qualityReport.qualityScore,\n  \"rag_similarity_scores\": JSON.stringify($json.retrievedCases.map(c => c.similarity)),\n  \"completed_at\": $json.completedAt\n} }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "save-history",
+      "name": "Save Research - Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [5080, 120],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credential",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.supabaseUrl }}/rest/v1/search_logs",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"session_id\": $json.sessionId,\n  \"user_id\": $json.userId,\n  \"query_text\": $json.originalQuery,\n  \"query_embedding\": JSON.stringify($json.queryEmbedding),\n  \"results_count\": $json.casesRetrieved,\n  \"top_similarity_scores\": JSON.stringify($json.retrievedCases.slice(0, 5).map(c => c.similarity)),\n  \"search_duration_ms\": $json.searchDurationMs\n} }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "log-search",
+      "name": "Log Search - Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [5080, 280],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credential",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {\n  \"success\": true,\n  \"sessionId\": $json.sessionId,\n  \"query\": $json.originalQuery,\n  \"memorandum\": $json.memorandum,\n  \"ragMetrics\": {\n    \"casesRetrieved\": $json.casesRetrieved,\n    \"topSimilarity\": ($json.topSimilarity * 100).toFixed(1) + '%',\n    \"avgSimilarity\": ($json.avgSimilarity * 100).toFixed(1) + '%',\n    \"searchDurationMs\": $json.searchDurationMs\n  },\n  \"qualityMetrics\": {\n    \"qualityScore\": $json.qualityReport.qualityScore,\n    \"ragGrounding\": $json.qualityReport.ragGrounding,\n    \"citationAccuracy\": $json.qualityReport.citationAccuracy\n  },\n  \"executionTime\": {\n    \"totalMs\": $json.totalExecutionTimeMs,\n    \"totalSeconds\": ($json.totalExecutionTimeMs / 1000).toFixed(2)\n  },\n  \"citations\": $json.retrievedCases.map((c, i) => ({\n    \"number\": i + 1,\n    \"citation\": c.citation,\n    \"jurisdiction\": c.jurisdiction,\n    \"similarity\": (c.similarity * 100).toFixed(1) + '%'\n  }))\n} }}",
+        "options": {}
+      },
+      "id": "respond-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [5300, 200]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "retry-message",
+              "name": "retryMessage",
+              "value": "=Quality score {{ $json.qualityReport.qualityScore }} below threshold. Manual review recommended.",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "needs-review",
+      "name": "Needs Expert Review",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [4420, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.supabaseUrl }}/rest/v1/expert_review_queue",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"session_id\": $json.sessionId,\n  \"user_id\": $json.userId,\n  \"query\": $json.originalQuery,\n  \"analysis\": JSON.stringify($json.synthesis),\n  \"memorandum\": \"Quality check failed - needs expert review\",\n  \"quality_issues\": JSON.stringify($json.qualityReport.issues || []),\n  \"quality_score\": $json.qualityReport.qualityScore,\n  \"priority\": \"high\",\n  \"status\": \"pending\"\n} }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "queue-review",
+      "name": "Queue Review - Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4640, 400],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credential",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {\n  \"success\": false,\n  \"sessionId\": $json.sessionId,\n  \"message\": \"Research completed but requires expert review\",\n  \"qualityScore\": $json.qualityReport.qualityScore,\n  \"issues\": $json.qualityReport.issues,\n  \"partialResults\": {\n    \"executiveSummary\": $json.synthesis.executiveSummary,\n    \"casesRetrieved\": $json.casesRetrieved\n  },\n  \"nextSteps\": \"This research has been queued for expert review. You will be notified when complete.\"\n} }}",
+        "options": {}
+      },
+      "id": "respond-review-needed",
+      "name": "Respond - Review Needed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [4860, 400]
+    }
+  ],
+  "connections": {
+    "Webhook - Research Query": {
+      "main": [
+        [
+          {
+            "node": "Initialize Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Initialize Session": {
+      "main": [
+        [
+          {
+            "node": "Build Issue Spotter Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Issue Spotter Prompt": {
+      "main": [
+        [
+          {
+            "node": "Issue Spotter Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Issue Spotter Agent": {
+      "main": [
+        [
+          {
+            "node": "Parse Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Analysis": {
+      "main": [
+        [
+          {
+            "node": "Generate Query Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Query Embedding": {
+      "main": [
+        [
+          {
+            "node": "Extract Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Embedding": {
+      "main": [
+        [
+          {
+            "node": "Vector Search RPC - Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vector Search RPC - Supabase": {
+      "main": [
+        [
+          {
+            "node": "Format RAG Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format RAG Context": {
+      "main": [
+        [
+          {
+            "node": "Build Analysis Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Analysis Prompt": {
+      "main": [
+        [
+          {
+            "node": "Case Analysis Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Case Analysis Agent": {
+      "main": [
+        [
+          {
+            "node": "Parse Case Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Case Analysis": {
+      "main": [
+        [
+          {
+            "node": "Build Synthesis Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Synthesis Prompt": {
+      "main": [
+        [
+          {
+            "node": "Synthesis Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Synthesis Agent": {
+      "main": [
+        [
+          {
+            "node": "Parse Synthesis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Synthesis": {
+      "main": [
+        [
+          {
+            "node": "Build Quality Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Quality Prompt": {
+      "main": [
+        [
+          {
+            "node": "Quality Control Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Quality Control Agent": {
+      "main": [
+        [
+          {
+            "node": "Parse Quality Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Quality Report": {
+      "main": [
+        [
+          {
+            "node": "Quality Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Quality Gate": {
+      "main": [
+        [
+          {
+            "node": "Build Memorandum Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Needs Expert Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Memorandum Prompt": {
+      "main": [
+        [
+          {
+            "node": "Draft Memorandum Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft Memorandum Agent": {
+      "main": [
+        [
+          {
+            "node": "Finalize Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize Response": {
+      "main": [
+        [
+          {
+            "node": "Save Research - Supabase",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log Search - Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Research - Supabase": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Search - Supabase": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Expert Review": {
+      "main": [
+        [
+          {
+            "node": "Queue Review - Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queue Review - Supabase": {
+      "main": [
+        [
+          {
+            "node": "Respond - Review Needed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": {
+    "node:Initialize Session": {
+      "supabaseUrl": "https://your-project.supabase.co"
+    }
+  },
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2024-12-15T00:00:00.000Z",
+  "versionId": "2"
+}
